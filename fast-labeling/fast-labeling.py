@@ -85,14 +85,12 @@ class FastLabelingApp:
         self.remove_last_btn = None
         self.status_var = tk.StringVar(value="")
         self.dataset_dir = tk.StringVar(value=self._default_dataset_dir())
-        self.info_var = tk.StringVar(value="")
         self.buttons_canvas = None
         self.buttons_scrollbar = None
         self.scrollbar_visible = False
 
         self._build_ui()
         os.makedirs(self.dataset_dir.get(), exist_ok=True)
-        self._update_info_text()
         self._load_existing_labels()
         self._bring_to_front()
         self._update_frame()
@@ -284,9 +282,6 @@ class FastLabelingApp:
     def _default_dataset_dir(self):
         return os.path.abspath(os.path.join(os.path.dirname(__file__), DATASET_DIR))
 
-    def _update_info_text(self):
-        self.info_var.set(f"Saved images in {self.dataset_dir.get()}/<label>/")
-
     def browse_dataset_dir(self):
         selected = filedialog.askdirectory(initialdir=self.dataset_dir.get())
         if selected:
@@ -298,7 +293,6 @@ class FastLabelingApp:
             return
         self.dataset_dir.set(new_dir)
         os.makedirs(new_dir, exist_ok=True)
-        self._update_info_text()
         self._reset_last_saved()
         self._reload_labels()
 
