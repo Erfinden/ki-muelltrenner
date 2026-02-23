@@ -1,0 +1,31 @@
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+venv/
+.env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Logs
+*.log
+
+# Data artifacts
+dataset/
+fast-labeling/dataset/
+
+# VS Code
+.vscode/
