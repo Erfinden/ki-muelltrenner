@@ -3,7 +3,7 @@ import re
 import sys
 import cv2
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 
 #!/usr/bin/env python3
@@ -26,6 +26,34 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 FILENAME_TEMPLATE = "{:04d}.jpg"
 NUM_PATTERN = re.compile(r"(\d+)\.\w+$")
+ENTRY_WIDTH = 28
+BUTTON_WIDTH = 12
+
+
+class ToolTip:
+    def __init__(self, widget, text_var):
+        self.widget = widget
+        self.text_var = text_var
+        self.tip = None
+        self.widget.bind("<Enter>", self._show)
+        self.widget.bind("<Leave>", self._hide)
+
+    def _show(self, event=None):
+        if self.tip or not self.text_var.get():
+            return
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.attributes("-topmost", True)
+        label = ttk.Label(self.tip, text=self.text_var.get(), padding=(6, 3))
+        label.pack()
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.tip.wm_geometry(f"+{x}+{y}")
+
+    def _hide(self, event=None):
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
 
 
 class FastLabelingApp:
@@ -33,6 +61,8 @@ class FastLabelingApp:
         self.root = root
         self.root.title("Fast Labeling")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.icon_image = None
+        self._set_window_icon()
 
         # Video capture
         self.current_camera_index = 0
@@ -50,9 +80,21 @@ class FastLabelingApp:
         self.current_frame_bgr = None
         self.photo_image = None
         self.labels = {}  # label -> button
+        self.last_saved_path = None
+        self.last_saved_label = None
+        self.remove_last_btn = None
+        self.status_var = tk.StringVar(value="")
+        self.dataset_dir = tk.StringVar(value=self._default_dataset_dir())
+        self.info_var = tk.StringVar(value="")
+        self.buttons_canvas = None
+        self.buttons_scrollbar = None
+        self.scrollbar_visible = False
 
         self._build_ui()
-        os.makedirs(DATASET_DIR, exist_ok=True)
+        os.makedirs(self.dataset_dir.get(), exist_ok=True)
+        self._update_info_text()
+        self._load_existing_labels()
+        self._bring_to_front()
         self._update_frame()
 
     def _detect_cameras(self):
@@ -105,42 +147,166 @@ class FastLabelingApp:
             sep_cam = ttk.Separator(control_frame, orient=tk.HORIZONTAL)
             sep_cam.pack(fill=tk.X, pady=4)
 
+        dataset_frame = ttk.Frame(control_frame)
+        dataset_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(dataset_frame, text="Dataset:").pack(anchor="w")
+        dataset_entry = ttk.Entry(
+            dataset_frame,
+            textvariable=self.dataset_dir,
+            width=ENTRY_WIDTH,
+            state="readonly",
+        )
+        dataset_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(dataset_entry, self.dataset_dir)
+        browse_btn = ttk.Button(
+            dataset_frame,
+            text="Browse",
+            width=BUTTON_WIDTH,
+            command=self.browse_dataset_dir,
+        )
+        browse_btn.pack(side=tk.LEFT, padx=(4, 0))
+
         add_label_frame = ttk.Frame(control_frame)
         add_label_frame.pack(fill=tk.X, pady=(0, 8))
-        self.label_entry = ttk.Entry(add_label_frame)
+        self.label_entry = ttk.Entry(add_label_frame, width=ENTRY_WIDTH)
         self.label_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        add_btn = ttk.Button(add_label_frame, text="Add Label", command=self.add_label)
+        add_btn = ttk.Button(
+            add_label_frame,
+            text="Add Label",
+            width=BUTTON_WIDTH,
+            command=self.add_label,
+        )
         add_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        remove_frame = ttk.Frame(control_frame)
+        remove_frame.pack(fill=tk.X, pady=(0, 8))
+        self.remove_last_btn = ttk.Button(
+            remove_frame,
+            text="Remove Last Image",
+            command=self.remove_last_image,
+            state=tk.DISABLED,
+        )
+        self.remove_last_btn.pack(anchor="w")
+        status_lbl = ttk.Label(remove_frame, textvariable=self.status_var)
+        status_lbl.pack(anchor="w", pady=(4, 0))
 
         sep = ttk.Separator(control_frame, orient=tk.HORIZONTAL)
         sep.pack(fill=tk.X, pady=4)
 
-        lbl = ttk.Label(control_frame, text="Labels (click to save):")
+        labels_header = ttk.Frame(control_frame)
+        labels_header.pack(fill=tk.X)
+        lbl = ttk.Label(labels_header, text="Labels (click to save):")
         lbl.pack(anchor="w")
 
         # scrollable area for label buttons
-        buttons_canvas = tk.Canvas(control_frame, borderwidth=0, height=320)
-        buttons_scrollbar = ttk.Scrollbar(control_frame, orient="vertical", command=buttons_canvas.yview)
-        self.buttons_container = ttk.Frame(buttons_canvas)
+        list_frame = ttk.Frame(control_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        list_frame.columnconfigure(0, weight=1)
 
-        self.buttons_container.bind(
-            "<Configure>",
-            lambda e: buttons_canvas.configure(scrollregion=buttons_canvas.bbox("all"))
+        self.buttons_canvas = tk.Canvas(list_frame, borderwidth=0, highlightthickness=0, height=320)
+        self.buttons_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.buttons_canvas.yview)
+        self.buttons_container = ttk.Frame(self.buttons_canvas)
+
+        self.buttons_container.bind("<Configure>", self._on_buttons_configure)
+        self.buttons_canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self.buttons_canvas.create_window((0, 0), window=self.buttons_container, anchor="nw")
+        self.buttons_canvas.configure(yscrollcommand=self.buttons_scrollbar.set)
+
+        self.buttons_canvas.grid(row=0, column=0, sticky="nsew")
+        self._update_scrollbar_visibility()
+        self._bind_mousewheel(self.buttons_canvas)
+
+        # Footer removed for cleaner layout
+
+    def _set_window_icon(self):
+        icon_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "fast_labeling_icon.png")
         )
+        if not os.path.exists(icon_path):
+            return
+        try:
+            icon_image = ImageTk.PhotoImage(Image.open(icon_path))
+            self.root.iconphoto(True, icon_image)
+            self.icon_image = icon_image
+        except Exception:
+            pass
 
-        buttons_canvas.create_window((0, 0), window=self.buttons_container, anchor="nw")
-        buttons_canvas.configure(yscrollcommand=buttons_scrollbar.set)
+    def _bring_to_front(self):
+        self.root.update_idletasks()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(200, lambda: self.root.attributes("-topmost", False))
+        self.root.focus_force()
 
-        buttons_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        buttons_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    def _on_buttons_configure(self, event=None):
+        if self.buttons_canvas:
+            self.buttons_canvas.configure(scrollregion=self.buttons_canvas.bbox("all"))
+            self._update_scrollbar_visibility()
 
-        # Footer: instructions and exit
-        foot = ttk.Frame(control_frame)
-        foot.pack(fill=tk.X, pady=(8, 0))
-        info = ttk.Label(foot, text="Saved images in ./dataset/<label>/")
-        info.pack(anchor="w")
-        quit_btn = ttk.Button(foot, text="Quit", command=self.on_close)
-        quit_btn.pack(anchor="e", pady=(4, 0))
+    def _on_canvas_configure(self, event=None):
+        self._update_scrollbar_visibility()
+
+    def _update_scrollbar_visibility(self):
+        if not self.buttons_canvas or not self.buttons_scrollbar:
+            return
+        bbox = self.buttons_canvas.bbox("all")
+        if not bbox:
+            return
+        content_height = bbox[3] - bbox[1]
+        canvas_height = self.buttons_canvas.winfo_height()
+        needs_scrollbar = content_height > canvas_height
+        if needs_scrollbar and not self.scrollbar_visible:
+            self.buttons_scrollbar.grid(row=0, column=1, sticky="ns")
+            self.scrollbar_visible = True
+            self.buttons_canvas.configure(yscrollcommand=self.buttons_scrollbar.set)
+        elif not needs_scrollbar and self.scrollbar_visible:
+            self.buttons_scrollbar.grid_remove()
+            self.scrollbar_visible = False
+            self.buttons_canvas.configure(yscrollcommand=None)
+
+    def _bind_mousewheel(self, widget):
+        widget.bind_all("<MouseWheel>", self._on_mousewheel)
+        widget.bind_all("<Button-4>", self._on_mousewheel)
+        widget.bind_all("<Button-5>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        if not self.buttons_canvas or not self.scrollbar_visible:
+            return
+        if event.num == 4:
+            delta = -120
+        elif event.num == 5:
+            delta = 120
+        else:
+            delta = -1 * event.delta
+        self.buttons_canvas.yview_scroll(int(delta / 120), "units")
+
+    def _default_dataset_dir(self):
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), DATASET_DIR))
+
+    def _update_info_text(self):
+        self.info_var.set(f"Saved images in {self.dataset_dir.get()}/<label>/")
+
+    def browse_dataset_dir(self):
+        selected = filedialog.askdirectory(initialdir=self.dataset_dir.get())
+        if selected:
+            self._set_dataset_dir(selected)
+
+    def _set_dataset_dir(self, path):
+        new_dir = os.path.abspath(path)
+        if new_dir == self.dataset_dir.get():
+            return
+        self.dataset_dir.set(new_dir)
+        os.makedirs(new_dir, exist_ok=True)
+        self._update_info_text()
+        self._reset_last_saved()
+        self._reload_labels()
+
+    def _reset_last_saved(self):
+        self.last_saved_path = None
+        self.last_saved_label = None
+        if self.remove_last_btn:
+            self.remove_last_btn.config(state=tk.DISABLED)
 
     def switch_camera(self, event=None):
         """Switch to a different camera device."""
@@ -150,23 +316,26 @@ class FastLabelingApp:
             new_index = int(selected.split()[-1])
             if new_index == self.current_camera_index:
                 return
-            
-            # Release current camera
-            if self.cap and self.cap.isOpened():
-                self.cap.release()
-            
-            # Open new camera
-            self.cap = cv2.VideoCapture(new_index)
-            if not self.cap.isOpened():
+            # Open new camera and validate before swapping
+            new_cap = cv2.VideoCapture(new_index)
+            if not new_cap.isOpened():
                 messagebox.showerror("Camera error", f"Could not open camera device {new_index}.")
-                # Try to reopen previous camera
-                self.cap = cv2.VideoCapture(self.current_camera_index)
                 self.camera_var.set(f"Device {self.current_camera_index}")
                 return
-            
-            # Set camera properties
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+            new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+            new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+            ret, _ = new_cap.read()
+            if not ret:
+                new_cap.release()
+                messagebox.showerror("Camera error", f"Camera device {new_index} is not available.")
+                self.camera_var.set(f"Device {self.current_camera_index}")
+                return
+
+            # Swap cameras
+            if self.cap and self.cap.isOpened():
+                self.cap.release()
+            self.cap = new_cap
             self.current_camera_index = new_index
             
         except (ValueError, IndexError):
@@ -181,17 +350,36 @@ class FastLabelingApp:
             self.labels[text].focus_set()
             self.label_entry.delete(0, tk.END)
             return
-        folder = os.path.join(DATASET_DIR, text)
-        os.makedirs(folder, exist_ok=True)
-        btn = ttk.Button(self.buttons_container, text=text, width=20, command=lambda t=text: self.save_image(t))
-        btn.pack(pady=2, anchor="w")
-        self.labels[text] = btn
+        self._create_label_button(text)
         self.label_entry.delete(0, tk.END)
+
+    def _load_existing_labels(self):
+        try:
+            entries = os.listdir(self.dataset_dir.get())
+        except FileNotFoundError:
+            return
+        for name in sorted(entries):
+            folder = os.path.join(self.dataset_dir.get(), name)
+            if os.path.isdir(folder) and name not in self.labels:
+                self._create_label_button(name)
+
+    def _reload_labels(self):
+        for child in self.buttons_container.winfo_children():
+            child.destroy()
+        self.labels.clear()
+        self._load_existing_labels()
+
+    def _create_label_button(self, label):
+        folder = os.path.join(self.dataset_dir.get(), label)
+        os.makedirs(folder, exist_ok=True)
+        btn = ttk.Button(self.buttons_container, text=label, width=20, command=lambda t=label: self.save_image(t))
+        btn.pack(pady=2, anchor="w")
+        self.labels[label] = btn
 
     def save_image(self, label):
         if self.current_frame_bgr is None:
             return
-        folder = os.path.join(DATASET_DIR, label)
+        folder = os.path.join(self.dataset_dir.get(), label)
         os.makedirs(folder, exist_ok=True)
 
         # find next index by scanning existing numeric filenames
@@ -211,12 +399,35 @@ class FastLabelingApp:
         path = os.path.join(folder, filename)
         # save BGR frame as JPEG
         cv2.imwrite(path, self.current_frame_bgr)
+        self.last_saved_path = path
+        self.last_saved_label = label
+        if self.remove_last_btn:
+            self.remove_last_btn.config(state=tk.NORMAL)
+        self.status_var.set(f"{label}/{filename} saved")
         # small visual feedback: briefly disable button text change
         btn = self.labels.get(label)
         if btn:
             old = btn.cget("text")
             btn.config(text=f"{old} ✓")
             self.root.after(300, lambda b=btn, t=old: b.config(text=t))
+
+    def remove_last_image(self):
+        if not self.last_saved_path:
+            return
+        try:
+            if os.path.exists(self.last_saved_path):
+                os.remove(self.last_saved_path)
+        finally:
+            removed_name = os.path.basename(self.last_saved_path)
+            removed_label = self.last_saved_label
+            self.last_saved_path = None
+            self.last_saved_label = None
+            if self.remove_last_btn:
+                self.remove_last_btn.config(state=tk.DISABLED)
+            if removed_label:
+                self.status_var.set(f"{removed_label}/{removed_name} removed")
+            else:
+                self.status_var.set(f"{removed_name} removed")
 
     def _update_frame(self):
         ret, frame = self.cap.read()
@@ -230,7 +441,11 @@ class FastLabelingApp:
             max_w = FRAME_WIDTH
             max_h = FRAME_HEIGHT
             if w > max_w or h > max_h:
-                pil = pil.resize((max_w, max_h), Image.ANTIALIAS)
+                try:
+                    resample = Image.Resampling.LANCZOS
+                except AttributeError:
+                    resample = Image.LANCZOS
+                pil = pil.resize((max_w, max_h), resample)
             self.photo_image = ImageTk.PhotoImage(image=pil)
             self.video_label.configure(image=self.photo_image)
         # schedule next frame
