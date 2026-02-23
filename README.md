@@ -45,3 +45,15 @@
 - If `python` does not work, try `py` instead.
 - If you see an error about missing packages, run:
   - `pip install -r requirements.txt`
+
+## Usage
+This is the main view:
+
+- Here you can add new labels and make your images.
+- The images are automatically labeled and saved to the dataset.
+
+![alt text](image-1.png)
+
+- You can find your dataset in the project folder.
+
+![alt text](image-2.png)
