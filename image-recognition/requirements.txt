@@ -1,0 +1,9 @@
+torch
+torchvision
+fastai
+Pillow
+matplotlib
+pandas
+scikit-learn
+jupyter
+ipywidgets

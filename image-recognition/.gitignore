@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Trained models
+models/*.pkl
+models/*.pth
+models/*.pt
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Data (large files – store separately)
+data/
