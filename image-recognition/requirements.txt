@@ -2,6 +2,7 @@ torch
 torchvision
 fastai
 Pillow
+opencv-python
 matplotlib
 pandas
 scikit-learn

@@ -19,9 +19,17 @@ pip install -r requirements.txt
 #     data/Metall/   data/Restmuell/  data/Biomuell/
 #     → use the fast-labeling tool from this repo to create images quickly!
 
-# 4 – Train the model
+# 4 – Train the model (uses ./data by default)
 python train.py
 #     → saved to models/trash_classifier.pkl
+
+# 4b – Use a custom data folder
+python train.py --data-dir /path/to/dataset
+#     → saved to models/trash_classifier.pkl
+
+# 4c – Full customisation
+python train.py --data-dir /path/to/dataset --model-dir /path/to/models --model-name my_model
+#     → saved to /path/to/models/my_model.pkl
 
 # 5a – Classify a single image
 python predict.py --image path/to/photo.jpg
@@ -118,15 +126,33 @@ data/
 ## 4 – Train the Model
 
 ```bash
+# Default – reads images from ./data, saves model to ./models/trash_classifier.pkl
 python train.py
+
+# Custom data folder
+python train.py --data-dir /path/to/dataset
+
+# Full customisation
+python train.py \
+  --data-dir /path/to/dataset \
+  --model-dir /path/to/models \
+  --model-name my_model
 ```
 
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-dir` | `./data` | Path to the folder containing one sub-folder per category |
+| `--model-dir` | `./models` | Directory where the trained model is saved |
+| `--model-name` | `trash_classifier` | Base name of the exported `.pkl` file |
+
 The script:
-1. Loads images from `data/` with an 80/20 train/validation split.
+1. Loads images from the given `--data-dir` with an 80/20 train/validation split.
 2. Trains a **ResNet-34** backbone (pretrained on ImageNet) with transfer learning.
 3. Fine-tunes the full network in a second phase.
 4. Prints a classification report.
-5. Saves the model to `models/trash_classifier.pkl`.
+5. Saves the model to `<model-dir>/<model-name>.pkl`.
 
 ---
 
@@ -177,6 +203,6 @@ python webcam_predict.py
 | Problem | Solution |
 |---------|----------|
 | `ModuleNotFoundError` | Run `pip install -r requirements.txt` inside the activated venv |
-| `FileNotFoundError: data/` | Create the `data/` folder and add images in sub-folders |
+| `FileNotFoundError: data/` | Create the `data/` folder and add images in sub-folders, or pass `--data-dir /your/path` |
 | CUDA out of memory | Lower `BATCH_SIZE` in `train.py` |
 | Webcam not found | Check camera connection; change `cv2.VideoCapture(0)` index |

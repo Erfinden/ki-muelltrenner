@@ -26,6 +26,7 @@ coverage.xml
 # Data artifacts
 dataset/
 fast-labeling/dataset/
+captures/
 
 # VS Code
 .vscode/

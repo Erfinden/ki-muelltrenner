@@ -21,8 +21,12 @@ Directory structure expected:
             ...
 
 Run:
-    python train.py
+    python train.py                          # uses ./data as default
+    python train.py --data-dir /path/to/data
+    python train.py --data-dir /path/to/data --model-dir /path/to/models --model-name my_model
 """
+
+import argparse
 
 from fastai.vision.all import (
     Path,
@@ -38,11 +42,37 @@ from fastai.vision.all import (
 import torch
 
 # ──────────────────────────────────────────────
+# CLI arguments
+# ──────────────────────────────────────────────
+parser = argparse.ArgumentParser(
+    description="Train a FastAI trash-classification model."
+)
+parser.add_argument(
+    "--data-dir",
+    type=Path,
+    default=Path("data"),
+    help="Path to the data folder (one sub-folder per category). Default: ./data",
+)
+parser.add_argument(
+    "--model-dir",
+    type=Path,
+    default=Path("models"),
+    help="Directory where the trained model is saved. Default: ./models",
+)
+parser.add_argument(
+    "--model-name",
+    type=str,
+    default="trash_classifier",
+    help="Base name for the exported model file (without .pkl). Default: trash_classifier",
+)
+args = parser.parse_args()
+
+# ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
-DATA_DIR = Path("data")          # folder with one sub-folder per trash category
-MODEL_DIR = Path("models")       # where the trained model is saved
-MODEL_NAME = "trash_classifier"  # saved as  models/trash_classifier.pkl
+DATA_DIR  = args.data_dir
+MODEL_DIR = args.model_dir
+MODEL_NAME = args.model_name
 
 IMG_SIZE   = 224    # input image size (px)
 BATCH_SIZE = 32     # images per mini-batch
@@ -109,6 +139,6 @@ interp.print_classification_report()
 # ──────────────────────────────────────────────
 # Save
 # ──────────────────────────────────────────────
-export_path = MODEL_DIR / f"{MODEL_NAME}.pkl"
+export_path = (MODEL_DIR / f"{MODEL_NAME}.pkl").resolve()
 learn.export(export_path)
 print(f"\nModel saved to: {export_path}")
