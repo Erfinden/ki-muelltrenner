@@ -1,6 +1,6 @@
 import os
-import re
 import sys
+import time
 import cv2
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -24,8 +24,6 @@ Dependencies:
 DATASET_DIR = "dataset"
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-FILENAME_TEMPLATE = "{:04d}.jpg"
-NUM_PATTERN = re.compile(r"(\d+)\.\w+$")
 ENTRY_WIDTH = 28
 BUTTON_WIDTH = 12
 
@@ -376,21 +374,15 @@ class FastLabelingApp:
         folder = os.path.join(self.dataset_dir.get(), label)
         os.makedirs(folder, exist_ok=True)
 
-        # find next index by scanning existing numeric filenames
-        existing = os.listdir(folder)
-        max_idx = 0
-        for fn in existing:
-            m = NUM_PATTERN.search(fn)
-            if m:
-                try:
-                    val = int(m.group(1))
-                    if val > max_idx:
-                        max_idx = val
-                except ValueError:
-                    pass
-        next_idx = max_idx + 1
-        filename = FILENAME_TEMPLATE.format(next_idx)
+        # Filename: <label>_YYYYMMDDHHMMSS[_µs].jpg  (matches predict_gui convention)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{label}_{ts}.jpg"
         path = os.path.join(folder, filename)
+        # Avoid collision if two saves happen within the same second
+        if os.path.exists(path):
+            µs = time.strftime("%f") if hasattr(time, "strftime") else str(int(time.time() * 1e6) % 1_000_000)
+            filename = f"{label}_{ts}_{µs}.jpg"
+            path = os.path.join(folder, filename)
         # save BGR frame as JPEG
         cv2.imwrite(path, self.current_frame_bgr)
         self.last_saved_path = path
@@ -398,7 +390,7 @@ class FastLabelingApp:
         if self.remove_last_btn:
             self.remove_last_btn.config(state=tk.NORMAL)
         self.status_var.set(f"{label}/{filename} saved")
-        # small visual feedback: briefly disable button text change
+        # small visual feedback: briefly flash a checkmark on the button
         btn = self.labels.get(label)
         if btn:
             old = btn.cget("text")

@@ -27,6 +27,7 @@ coverage.xml
 dataset/
 fast-labeling/dataset/
 captures/
+collected-data/
 
 # VS Code
 .vscode/

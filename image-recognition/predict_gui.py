@@ -19,9 +19,11 @@ Dependencies (same venv as the rest of the project):
 """
 
 import os
+import re
 import sys
 import cv2
 import time
+import shutil
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -32,8 +34,9 @@ from PIL import Image, ImageTk
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-MODEL_PATH    = Path(__file__).parent / "models" / "trash_classifier.pkl"
-CAPTURES_DIR  = Path(__file__).parent / "captures"
+MODEL_PATH         = Path(__file__).parent / "models" / "trash_classifier.pkl"
+CAPTURES_DIR       = Path(__file__).parent / "captures"
+COLLECTED_DATA_DIR = Path(__file__).parent / "collected-data"
 
 # Path to the shared TrashBinController module (one level up from image-recognition/)
 _CONTROLLER_DIR = Path(__file__).parent.parent / "arduino-sketch"
@@ -76,7 +79,7 @@ FG_TEXT      = "#e2e8f0"
 FG_MUTED     = "#94a3b8"
 ACCENT       = "#e94560"
 ACCENT_HOVER = "#c73652"
-BTN_TEXT     = "#ffffff"
+BTN_TEXT     = "#000000"
 
 COLOR_CONNECTED    = "#4ade80"   # green dot
 COLOR_DISCONNECTED = "#f87171"   # red dot
@@ -123,6 +126,10 @@ class PredictGUI:
         self.cap               = None
         self.current_camera_index = 0
         self.available_cameras    = []
+
+        # ── Last prediction (for feedback buttons) ────────────────────────────
+        self._last_capture_path: Path | None = None
+        self._last_top_label:    str  | None = None
 
         # ── Arduino state ─────────────────────────────────────────────────────
         self._arduino = None          # TrashBinController instance (or None)
@@ -181,14 +188,14 @@ class PredictGUI:
         # "Prüfen" button
         self._build_pruefen_button(left)
 
-        # Status bar
+        # Status bar (row 4 because feedback row takes row 3)
         self.status_var = tk.StringVar(value="Modell wird geladen …")
         status_bar = tk.Label(
             left, textvariable=self.status_var,
             bg=BG_DARK, fg=FG_MUTED, font=("Helvetica", 10),
             anchor="w"
         )
-        status_bar.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        status_bar.grid(row=4, column=0, sticky="ew", pady=(4, 0))
 
         # ── Right: labels panel + Arduino panel ───────────────────────────────
         right = tk.Frame(outer, bg=BG_PANEL, padx=14, pady=14)
@@ -218,7 +225,7 @@ class PredictGUI:
         self._build_arduino_panel(right)
 
     def _build_pruefen_button(self, parent):
-        """Create the big 'Prüfen' button with hover effect."""
+        """Create the big 'Prüfen' button and the Richtig/Falsch feedback row."""
         self.pruefen_btn = tk.Button(
             parent,
             text="📸  Prüfen",
@@ -238,6 +245,47 @@ class PredictGUI:
         self.pruefen_btn.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self.pruefen_btn.bind("<Enter>", lambda e: self.pruefen_btn.config(bg=ACCENT_HOVER))
         self.pruefen_btn.bind("<Leave>", lambda e: self.pruefen_btn.config(bg=ACCENT))
+
+        # ── Richtig / Falsch feedback row ─────────────────────────────────────
+        fb_row = tk.Frame(parent, bg=BG_DARK)
+        fb_row.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        fb_row.columnconfigure(0, weight=1)
+        fb_row.columnconfigure(1, weight=1)
+
+        COLOR_RICHTIG       = "#166534"
+        COLOR_RICHTIG_HOVER = "#14532d"
+        COLOR_FALSCH        = "#7f1d1d"
+        COLOR_FALSCH_HOVER  = "#6b1919"
+
+        self.richtig_btn = tk.Button(
+            fb_row,
+            text="✅  Richtig",
+            font=("Helvetica", 13, "bold"),
+            bg=COLOR_RICHTIG, fg=BTN_TEXT,
+            activebackground=COLOR_RICHTIG_HOVER, activeforeground=BTN_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=10, pady=8,
+            state=tk.DISABLED,
+            command=self._on_richtig,
+        )
+        self.richtig_btn.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.richtig_btn.bind("<Enter>", lambda e: self.richtig_btn.config(bg=COLOR_RICHTIG_HOVER) if self.richtig_btn["state"] == tk.NORMAL else None)
+        self.richtig_btn.bind("<Leave>", lambda e: self.richtig_btn.config(bg=COLOR_RICHTIG))
+
+        self.falsch_btn = tk.Button(
+            fb_row,
+            text="❌  Falsch",
+            font=("Helvetica", 13, "bold"),
+            bg=COLOR_FALSCH, fg=BTN_TEXT,
+            activebackground=COLOR_FALSCH_HOVER, activeforeground=BTN_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=10, pady=8,
+            state=tk.DISABLED,
+            command=self._on_falsch,
+        )
+        self.falsch_btn.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self.falsch_btn.bind("<Enter>", lambda e: self.falsch_btn.config(bg=COLOR_FALSCH_HOVER) if self.falsch_btn["state"] == tk.NORMAL else None)
+        self.falsch_btn.bind("<Leave>", lambda e: self.falsch_btn.config(bg=COLOR_FALSCH))
 
     def _build_arduino_panel(self, parent):
         """Build the Arduino serial connection card at the bottom of the right panel."""
@@ -624,6 +672,12 @@ class PredictGUI:
             messagebox.showwarning("Kein Bild", "Noch kein Kamerabild verfügbar.")
             return
 
+        # Reset feedback state & disable feedback buttons
+        self._last_capture_path = None
+        self._last_top_label    = None
+        self.richtig_btn.config(state=tk.DISABLED)
+        self.falsch_btn.config(state=tk.DISABLED)
+
         # Disable button during processing
         self.pruefen_btn.config(state=tk.DISABLED, text="⏳  Analysiere …")
         self.status_var.set("Bild wird gespeichert und analysiert …")
@@ -644,6 +698,12 @@ class PredictGUI:
             )
             self._update_bars(results)
 
+            # Remember for feedback
+            self._last_capture_path = save_path
+            self._last_top_label    = top_label
+            self.richtig_btn.config(state=tk.NORMAL)
+            self.falsch_btn.config(state=tk.NORMAL)
+
             # Send to Arduino (if enabled)
             self._send_lid_command(top_label)
 
@@ -653,6 +713,66 @@ class PredictGUI:
 
         # Re-enable button
         self.pruefen_btn.config(state=tk.NORMAL, text="📸  Prüfen")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Feedback: Richtig / Falsch
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _save_to_collected_data(self, label: str, src: Path) -> Path:
+        """
+        Move *src* into  collected-data/<label>/<label>_<timestamp>.jpg
+        Returns the destination path.
+        """
+        dest_dir = COLLECTED_DATA_DIR / label
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build a safe, unique filename from the original timestamp part
+        ts_part = re.sub(r"[^0-9]", "", src.stem)  # keep only digits
+        dest = dest_dir / f"{label}_{ts_part or time.strftime('%Y%m%d_%H%M%S')}.jpg"
+        shutil.move(str(src), str(dest))
+        return dest
+
+    def _on_richtig(self):
+        if not self._last_capture_path or not self._last_top_label:
+            return
+        try:
+            dest = self._save_to_collected_data(self._last_top_label, self._last_capture_path)
+            self.status_var.set(
+                f"✅ Gespeichert als: collected-data/{self._last_top_label}/{dest.name}"
+            )
+        except Exception as exc:
+            messagebox.showerror("Speicherfehler", str(exc))
+            return
+        # Disable buttons so the same capture can't be saved twice
+        self._last_capture_path = None
+        self._last_top_label    = None
+        self.richtig_btn.config(state=tk.DISABLED)
+        self.falsch_btn.config(state=tk.DISABLED)
+
+    def _on_falsch(self):
+        if not self._last_capture_path or not self._last_top_label:
+            return
+        # Open a label-picker dialog
+        dialog = LabelPickerDialog(
+            self.root,
+            vocab=self.vocab,
+            wrong_label=self._last_top_label,
+        )
+        correct_label = dialog.result
+        if correct_label is None:
+            return  # user cancelled
+        try:
+            dest = self._save_to_collected_data(correct_label, self._last_capture_path)
+            self.status_var.set(
+                f"❌→✅ Gespeichert als: collected-data/{correct_label}/{dest.name}"
+            )
+        except Exception as exc:
+            messagebox.showerror("Speicherfehler", str(exc))
+            return
+        self._last_capture_path = None
+        self._last_top_label    = None
+        self.richtig_btn.config(state=tk.DISABLED)
+        self.falsch_btn.config(state=tk.DISABLED)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Misc helpers
@@ -678,10 +798,105 @@ class PredictGUI:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Label-picker dialog  (used by "Falsch" button)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class LabelPickerDialog(tk.Toplevel):
+    """
+    Modal dialog that asks the user to pick the correct label.
+
+    After the dialog closes, inspect ``dialog.result``:
+      - str  → the label the user selected
+      - None → the user cancelled
+    """
+
+    def __init__(self, parent: tk.Tk, vocab: list[str], wrong_label: str):
+        super().__init__(parent)
+        self.result: str | None = None
+
+        self.title("Richtiges Label wählen")
+        self.configure(bg=BG_DARK)
+        self.resizable(False, False)
+
+        # Make modal
+        self.transient(parent)
+        self.grab_set()
+
+        # ── Header ────────────────────────────────────────────────────────────
+        tk.Label(
+            self,
+            text="❌  Falsche Vorhersage",
+            bg=BG_DARK, fg=ACCENT,
+            font=("Helvetica", 14, "bold"),
+        ).pack(padx=24, pady=(20, 4))
+
+        tk.Label(
+            self,
+            text=f"KI hat erkannt: \"{wrong_label}\"\nWelches Label ist korrekt?",
+            bg=BG_DARK, fg=FG_MUTED,
+            font=("Helvetica", 11),
+            justify="center",
+        ).pack(padx=24, pady=(0, 14))
+
+        # ── Label buttons ─────────────────────────────────────────────────────
+        btn_frame = tk.Frame(self, bg=BG_DARK)
+        btn_frame.pack(padx=24, pady=(0, 8), fill=tk.BOTH, expand=True)
+
+        for idx, label in enumerate(vocab):
+            is_wrong = (label == wrong_label)
+            color  = SLOT_COLORS[idx % len(SLOT_COLORS)]
+            bg_col = BG_CARD if is_wrong else BG_PANEL
+            fg_col = FG_MUTED if is_wrong else color
+            prefix = "✗  " if is_wrong else "✓  "
+
+            btn = tk.Button(
+                btn_frame,
+                text=f"{prefix}{label}",
+                font=("Helvetica", 13, "bold"),
+                bg=bg_col, fg=fg_col,
+                activebackground=color, activeforeground=BG_DARK,
+                relief=tk.FLAT, bd=0, cursor="hand2",
+                padx=14, pady=10,
+                command=lambda lbl=label: self._select(lbl),
+            )
+            btn.pack(fill=tk.X, pady=3)
+
+        # ── Cancel button ─────────────────────────────────────────────────────
+        tk.Frame(self, bg=BG_CARD, height=1).pack(fill=tk.X, padx=24, pady=(8, 0))
+        tk.Button(
+            self,
+            text="Abbrechen",
+            font=("Helvetica", 11),
+            bg=BG_PANEL, fg=FG_MUTED,
+            activebackground=BG_CARD, activeforeground=FG_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=10, pady=8,
+            command=self._cancel,
+        ).pack(fill=tk.X, padx=24, pady=(6, 20))
+
+        # Centre over parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + (parent.winfo_width()  - self.winfo_width())  // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{px}+{py}")
+
+        parent.wait_window(self)
+
+    def _select(self, label: str):
+        self.result = label
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+
     root = tk.Tk()
     root.geometry("1020x680")
     root.minsize(800, 560)
