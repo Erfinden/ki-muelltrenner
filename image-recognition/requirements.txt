@@ -8,3 +8,4 @@ pandas
 scikit-learn
 jupyter
 ipywidgets
+pyserial

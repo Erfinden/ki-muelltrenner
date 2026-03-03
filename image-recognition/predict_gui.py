@@ -8,16 +8,21 @@ Shows a live webcam preview.  Clicking "Prüfen" captures a frame, saves it to
 captures/ and runs it through the trained FastAI model.  The prediction
 probabilities for every label are displayed in coloured progress bars.
 
+Optionally connects to the Arduino over USB serial and sends an OPEN command
+to the correct lid based on the top prediction.
+
 Usage:
     python predict_gui.py
 
 Dependencies (same venv as the rest of the project):
-    fastai, opencv-python, Pillow, torch, tkinter (stdlib)
+    fastai, opencv-python, Pillow, torch, tkinter (stdlib), pyserial
 """
 
 import os
+import sys
 import cv2
 import time
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -30,8 +35,25 @@ from PIL import Image, ImageTk
 MODEL_PATH    = Path(__file__).parent / "models" / "trash_classifier.pkl"
 CAPTURES_DIR  = Path(__file__).parent / "captures"
 
+# Path to the shared TrashBinController module (one level up from image-recognition/)
+_CONTROLLER_DIR = Path(__file__).parent.parent / "arduino-sketch"
+if str(_CONTROLLER_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONTROLLER_DIR))
+
 FRAME_WIDTH  = 640
 FRAME_HEIGHT = 480
+
+# ── Label → Lid mapping ───────────────────────────────────────────────────────
+# Lid 1 = Papier/paper,  Lid 2 = everything else
+LABEL_TO_LID: dict[str, int] = {
+    "papier":   1,
+    "paper":    1,
+    # all other labels default to lid 2 (see _label_to_lid())
+}
+
+def _label_to_lid(label: str) -> int:
+    return LABEL_TO_LID.get(label.lower(), 2)
+
 
 # Accent colours per label slot (up to 10 labels; cycles if more)
 SLOT_COLORS = [
@@ -55,6 +77,9 @@ FG_MUTED     = "#94a3b8"
 ACCENT       = "#e94560"
 ACCENT_HOVER = "#c73652"
 BTN_TEXT     = "#ffffff"
+
+COLOR_CONNECTED    = "#4ade80"   # green dot
+COLOR_DISCONNECTED = "#f87171"   # red dot
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Model loading helpers
@@ -90,7 +115,7 @@ class PredictGUI:
         self.root.configure(bg=BG_DARK)
         self.root.resizable(True, True)
 
-        # State
+        # ── Model / camera state ──────────────────────────────────────────────
         self.learner    = None
         self.vocab: list[str] = []
         self.current_frame_bgr = None
@@ -99,9 +124,13 @@ class PredictGUI:
         self.current_camera_index = 0
         self.available_cameras    = []
 
-        # Label widgets (populated after model load)
-        self._bar_vars:   dict[str, tk.DoubleVar]  = {}
-        self._pct_vars:   dict[str, tk.StringVar]  = {}
+        # ── Arduino state ─────────────────────────────────────────────────────
+        self._arduino = None          # TrashBinController instance (or None)
+        self._arduino_lock = threading.Lock()
+
+        # ── Label widgets (populated after model load) ────────────────────────
+        self._bar_vars:   dict[str, tk.DoubleVar]    = {}
+        self._pct_vars:   dict[str, tk.StringVar]    = {}
         self._bar_frames: dict[str, ttk.Progressbar] = {}
 
         # Build UI skeleton (video + right panel)
@@ -123,7 +152,7 @@ class PredictGUI:
         outer.columnconfigure(1, weight=2)
         outer.rowconfigure(0, weight=1)
 
-        # ── Left: video + button ──────────────────────────────────────────────
+        # ── Left: video + controls ────────────────────────────────────────────
         left = tk.Frame(outer, bg=BG_DARK)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.rowconfigure(0, weight=1)
@@ -161,7 +190,7 @@ class PredictGUI:
         )
         status_bar.grid(row=3, column=0, sticky="ew", pady=(4, 0))
 
-        # ── Right: labels panel ───────────────────────────────────────────────
+        # ── Right: labels panel + Arduino panel ───────────────────────────────
         right = tk.Frame(outer, bg=BG_PANEL, padx=14, pady=14)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
@@ -185,6 +214,9 @@ class PredictGUI:
         loading_lbl.pack(pady=40)
         self._loading_lbl = loading_lbl
 
+        # ── Arduino connection panel ───────────────────────────────────────────
+        self._build_arduino_panel(right)
+
     def _build_pruefen_button(self, parent):
         """Create the big 'Prüfen' button with hover effect."""
         self.pruefen_btn = tk.Button(
@@ -206,6 +238,90 @@ class PredictGUI:
         self.pruefen_btn.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self.pruefen_btn.bind("<Enter>", lambda e: self.pruefen_btn.config(bg=ACCENT_HOVER))
         self.pruefen_btn.bind("<Leave>", lambda e: self.pruefen_btn.config(bg=ACCENT))
+
+    def _build_arduino_panel(self, parent):
+        """Build the Arduino serial connection card at the bottom of the right panel."""
+        sep = tk.Frame(parent, bg=BG_CARD, height=1)
+        sep.pack(fill=tk.X, pady=(16, 0))
+
+        card = tk.Frame(parent, bg=BG_CARD, padx=12, pady=10)
+        card.pack(fill=tk.X, pady=(6, 0))
+        card.columnconfigure(1, weight=1)
+
+        # Header row with status dot
+        hdr_row = tk.Frame(card, bg=BG_CARD)
+        hdr_row.pack(fill=tk.X)
+
+        tk.Label(
+            hdr_row, text="🔌  Arduino", bg=BG_CARD, fg=FG_TEXT,
+            font=("Helvetica", 12, "bold"), anchor="w"
+        ).pack(side=tk.LEFT)
+
+        self._ard_status_dot = tk.Label(
+            hdr_row, text="●", bg=BG_CARD, fg=COLOR_DISCONNECTED,
+            font=("Helvetica", 14)
+        )
+        self._ard_status_dot.pack(side=tk.LEFT, padx=(6, 0))
+
+        self._ard_status_lbl = tk.Label(
+            hdr_row, text="Nicht verbunden", bg=BG_CARD, fg=FG_MUTED,
+            font=("Helvetica", 10)
+        )
+        self._ard_status_lbl.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Port row
+        port_row = tk.Frame(card, bg=BG_CARD)
+        port_row.pack(fill=tk.X, pady=(8, 0))
+
+        tk.Label(
+            port_row, text="Port:", bg=BG_CARD, fg=FG_MUTED,
+            font=("Helvetica", 10), width=5, anchor="w"
+        ).pack(side=tk.LEFT)
+
+        self._port_var = tk.StringVar(value="Auto")
+        self._port_combo = ttk.Combobox(
+            port_row, textvariable=self._port_var,
+            width=20, font=("Helvetica", 10)
+        )
+        self._port_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 4))
+
+        refresh_btn = tk.Button(
+            port_row, text="↻", font=("Helvetica", 11, "bold"),
+            bg=BG_PANEL, fg=FG_MUTED, relief=tk.FLAT, bd=0,
+            cursor="hand2", padx=4, pady=2,
+            command=self._refresh_ports
+        )
+        refresh_btn.pack(side=tk.LEFT)
+
+        # Connect / Disconnect button
+        self._connect_btn = tk.Button(
+            card,
+            text="Verbinden",
+            font=("Helvetica", 11, "bold"),
+            bg="#1e3a5f", fg=BTN_TEXT,
+            activebackground="#2a4f80",
+            activeforeground=BTN_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=10, pady=6,
+            command=self._toggle_arduino_connection
+        )
+        self._connect_btn.pack(fill=tk.X, pady=(8, 0))
+
+        # Checkbox – send to Arduino
+        self._send_to_arduino_var = tk.BooleanVar(value=False)
+        self._send_chk = tk.Checkbutton(
+            card,
+            text="Vorhersage an Arduino senden",
+            variable=self._send_to_arduino_var,
+            bg=BG_CARD, fg=FG_TEXT, selectcolor=BG_PANEL,
+            activebackground=BG_CARD, activeforeground=FG_TEXT,
+            font=("Helvetica", 11),
+            anchor="w", cursor="hand2",
+        )
+        self._send_chk.pack(fill=tk.X, pady=(8, 0))
+
+        # Populate port list
+        self._refresh_ports()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Startup sequence
@@ -300,6 +416,105 @@ class PredictGUI:
             self.cap.release()
         self.cap = new_cap
         self.current_camera_index = new_idx
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Arduino helpers
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _refresh_ports(self):
+        """Populate the port combobox with currently available serial ports."""
+        try:
+            from serial.tools import list_ports
+            ports = ["Auto"] + [p.device for p in list_ports.comports()]
+        except ImportError:
+            ports = ["Auto"]
+        current = self._port_var.get()
+        self._port_combo["values"] = ports
+        if current not in ports:
+            self._port_var.set("Auto")
+
+    def _toggle_arduino_connection(self):
+        with self._arduino_lock:
+            if self._arduino is not None:
+                self._disconnect_arduino()
+            else:
+                self._connect_arduino()
+
+    def _connect_arduino(self):
+        """Try to open the serial connection (must be called with _arduino_lock held)."""
+        try:
+            from trash_bin_controller import TrashBinController, find_arduino_port
+        except ImportError:
+            messagebox.showerror(
+                "Importfehler",
+                "trash_bin_controller.py nicht gefunden.\n"
+                f"Erwartet in: {_CONTROLLER_DIR}"
+            )
+            return
+
+        port_selection = self._port_var.get()
+        port = None if port_selection == "Auto" else port_selection
+
+        self._ard_status_lbl.config(text="Verbinde …")
+        self._connect_btn.config(state=tk.DISABLED)
+        self.root.update_idletasks()
+
+        try:
+            ctrl = TrashBinController(port=port)
+            self._arduino = ctrl
+            self._ard_status_dot.config(fg=COLOR_CONNECTED)
+            self._ard_status_lbl.config(text=f"Verbunden ({ctrl._serial.name})")
+            self._connect_btn.config(text="Trennen", state=tk.NORMAL,
+                                     bg="#3d1f1f", activebackground="#5a2b2b")
+        except Exception as exc:
+            self._arduino = None
+            self._ard_status_dot.config(fg=COLOR_DISCONNECTED)
+            self._ard_status_lbl.config(text="Nicht verbunden")
+            self._connect_btn.config(state=tk.NORMAL)
+            messagebox.showerror("Verbindungsfehler", f"Arduino nicht erreichbar:\n{exc}")
+
+    def _disconnect_arduino(self):
+        """Close the serial connection (must be called with _arduino_lock held)."""
+        try:
+            if self._arduino:
+                self._arduino.close()
+        except Exception:
+            pass
+        self._arduino = None
+        self._ard_status_dot.config(fg=COLOR_DISCONNECTED)
+        self._ard_status_lbl.config(text="Nicht verbunden")
+        self._connect_btn.config(text="Verbinden", bg="#1e3a5f",
+                                 activebackground="#2a4f80", state=tk.NORMAL)
+
+    def _send_lid_command(self, label: str):
+        """Open the correct lid for *label* if Arduino is connected and checkbox is on."""
+        if not self._send_to_arduino_var.get():
+            return
+        with self._arduino_lock:
+            if self._arduino is None:
+                self.status_var.set(
+                    self.status_var.get() + "  ⚠ Arduino nicht verbunden"
+                )
+                return
+            lid = _label_to_lid(label)
+            try:
+                response = self._arduino.open_lid(lid)
+                self.status_var.set(
+                    self.status_var.get() + f"  |  Arduino: {response}"
+                )
+            except Exception as exc:
+                self.status_var.set(
+                    self.status_var.get() + f"  ⚠ Arduino-Fehler: {exc}"
+                )
+                # Mark as disconnected so the user reconnects
+                self._arduino = None
+                self.root.after(0, self._refresh_arduino_ui_disconnected)
+
+    def _refresh_arduino_ui_disconnected(self):
+        self._ard_status_dot.config(fg=COLOR_DISCONNECTED)
+        self._ard_status_lbl.config(text="Verbindung verloren")
+        self._connect_btn.config(text="Verbinden", bg="#1e3a5f",
+                                 activebackground="#2a4f80", state=tk.NORMAL)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Label rows (built after model is loaded so we know the vocab)
@@ -423,10 +638,15 @@ class PredictGUI:
         try:
             results = _predict(self.learner, save_path)
             top_label, top_pct = results[0]
+            lid = _label_to_lid(top_label)
             self.status_var.set(
-                f"Ergebnis: {top_label}  ({top_pct:.1f} %)  |  gespeichert: {save_path.name}"
+                f"Ergebnis: {top_label}  ({top_pct:.1f} %)  |  Deckel {lid}  |  {save_path.name}"
             )
             self._update_bars(results)
+
+            # Send to Arduino (if enabled)
+            self._send_lid_command(top_label)
+
         except Exception as exc:
             messagebox.showerror("Vorhersagefehler", str(exc))
             self.status_var.set("Fehler bei der Vorhersage.")
@@ -451,6 +671,8 @@ class PredictGUI:
                 self.cap.release()
         except Exception:
             pass
+        with self._arduino_lock:
+            self._disconnect_arduino()
         self.root.quit()
         self.root.destroy()
 
@@ -461,8 +683,8 @@ class PredictGUI:
 
 def main():
     root = tk.Tk()
-    root.geometry("1020x600")
-    root.minsize(800, 500)
+    root.geometry("1020x680")
+    root.minsize(800, 560)
 
     # Dark title bar on macOS (requires Tk ≥ 8.6.12 or Python ≥ 3.11 on arm64)
     try:
