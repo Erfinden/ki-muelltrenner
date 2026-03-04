@@ -128,7 +128,7 @@ if EXTRA_DATA_DIRS:
     print(f"\nMerging {len(all_dirs)} data source(s):")
     for d in all_dirs:
         imgs = get_image_files(d)
-        print(f"  {d}  →  {len(imgs)} images")
+        print(f"{d}{len(imgs)} images")
 
     # Collect every image file across all directories into a flat list
     all_files = list(chain.from_iterable(get_image_files(d) for d in all_dirs))
@@ -167,20 +167,20 @@ learn = vision_learner(dls, resnet34, metrics=error_rate)
 # ──────────────────────────────────────────────
 # Phase 1 – frozen backbone (transfer learning)
 # ──────────────────────────────────────────────
-print("\n── Phase 1: Training head (backbone frozen) ──")
+print("\nPhase 1: Training head (backbone frozen)")
 learn.fine_tune(EPOCHS_FT, base_lr=LEARNING_RATE)
 
 # ──────────────────────────────────────────────
 # Phase 2 – unfreeze & fine-tune whole network
 # ──────────────────────────────────────────────
-print("\n── Phase 2: Fine-tuning full network ──")
+print("\nPhase 2: Fine-tuning full network")
 learn.unfreeze()
 learn.fit_one_cycle(EPOCHS_UNF, lr_max=slice(1e-6, 1e-4))
 
 # ──────────────────────────────────────────────
 # Evaluation
 # ──────────────────────────────────────────────
-print("\n── Evaluation on validation set ──")
+print("\nEvaluation on validation set")
 interp = ClassificationInterpretation.from_learner(learn)
 interp.print_classification_report()
 
