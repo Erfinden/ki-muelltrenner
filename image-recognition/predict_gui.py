@@ -172,19 +172,30 @@ class PredictGUI:
         self.video_label = tk.Label(video_card, bg=BG_PANEL, cursor="none")
         self.video_label.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        # Camera selector row (shown only when >1 camera found)
-        self.cam_row = tk.Frame(left, bg=BG_DARK)
-        self.cam_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        # Camera selector row (always visible)
+        cam_row = tk.Frame(left, bg=BG_DARK)
+        cam_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        cam_row.columnconfigure(1, weight=1)
+
+        tk.Label(
+            cam_row, text="Kamera:", bg=BG_DARK, fg=FG_MUTED,
+            font=("Helvetica", 10), anchor="w"
+        ).grid(row=0, column=0, sticky="w")
+
         self.camera_var = tk.StringVar()
-        self._cam_label = tk.Label(
-            self.cam_row, text="Kamera:", bg=BG_DARK, fg=FG_MUTED,
-            font=("Helvetica", 10)
-        )
         self._cam_combo = ttk.Combobox(
-            self.cam_row, textvariable=self.camera_var,
+            cam_row, textvariable=self.camera_var,
             state="readonly", width=14
         )
+        self._cam_combo.grid(row=0, column=1, sticky="ew", padx=(6, 4))
         self._cam_combo.bind("<<ComboboxSelected>>", self._switch_camera)
+
+        tk.Button(
+            cam_row, text="↻", font=("Helvetica", 11, "bold"),
+            bg=BG_PANEL, fg=FG_MUTED, relief=tk.FLAT, bd=0,
+            cursor="hand2", padx=4, pady=2,
+            command=self._refresh_cameras
+        ).grid(row=0, column=2, sticky="e")
 
         # "Prüfen" button
         self._build_pruefen_button(left)
@@ -460,12 +471,8 @@ class PredictGUI:
             self.root.destroy()
             return
 
-        # Show camera selector if multiple found
-        if len(self.available_cameras) > 1:
-            self._cam_label.pack(side=tk.LEFT)
-            self._cam_combo.config(values=[f"Gerät {i}" for i in self.available_cameras])
-            self.camera_var.set(f"Gerät {self.available_cameras[0]}")
-            self._cam_combo.pack(side=tk.LEFT, padx=(4, 0))
+        # Always populate & show camera selector
+        self._refresh_cameras()
 
         # 4. Open camera
         self._open_camera(self.available_cameras[0])
@@ -498,6 +505,20 @@ class PredictGUI:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
         self.cap = cap
         self.current_camera_index = index
+
+    def _refresh_cameras(self):
+        """Re-detect cameras and populate the combobox; open first if none active yet."""
+        self.available_cameras = self._detect_cameras()
+        values = [f"Gerät {i}" for i in self.available_cameras]
+        self._cam_combo.config(values=values)
+        current = self.camera_var.get()
+        if current not in values:
+            first = values[0] if values else ""
+            self.camera_var.set(first)
+        # If no camera is open yet, open the first detected one
+        if (self.cap is None or not self.cap.isOpened()) and self.available_cameras:
+            self._open_camera(self.available_cameras[0])
+            self.camera_var.set(f"Gerät {self.available_cameras[0]}")
 
     def _switch_camera(self, event=None):
         selected = self.camera_var.get()
