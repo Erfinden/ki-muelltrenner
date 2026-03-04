@@ -133,47 +133,59 @@ class TrainGUI:
             bg=BG_PANEL, fg=FG_MUTED, font=("Helvetica", 10), anchor="w"
         ).pack(fill=tk.X)
 
-        # Listbox with scrollbar
-        list_frame = tk.Frame(card, bg=BG_CARD)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        # ── Scrollable card list ──────────────────────────────────────────
+        # A Canvas + inner Frame lets each row expand to multiple lines.
+        list_outer = tk.Frame(card, bg=BG_CARD, pady=4)
+        list_outer.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
 
-        sb = tk.Scrollbar(list_frame, orient=tk.VERTICAL, bg=BG_CARD,
-                          troughcolor=BG_DARK, activebackground=ACCENT)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.dataset_listbox = tk.Listbox(
-            list_frame,
-            bg=BG_CARD, fg=FG_TEXT,
-            selectbackground=ACCENT, selectforeground=BTN_TEXT,
-            font=("Helvetica", 11), relief=tk.FLAT, bd=0,
-            highlightthickness=0, activestyle="none",
-            yscrollcommand=sb.set, height=6,
+        self._ds_canvas = tk.Canvas(
+            list_outer, bg=BG_CARD, highlightthickness=0,
+            bd=0, height=160,
         )
-        self.dataset_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.config(command=self.dataset_listbox.yview)
+        ds_scroll = tk.Scrollbar(
+            list_outer, orient=tk.VERTICAL, bg=BG_CARD,
+            troughcolor=BG_DARK, activebackground=ACCENT,
+            command=self._ds_canvas.yview,
+        )
+        self._ds_canvas.configure(yscrollcommand=ds_scroll.set)
+        ds_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._ds_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Tooltip: show full path of the item under the cursor
-        def _listbox_tip_text():
-            lb = self.dataset_listbox
-            # nearest() converts the y-coordinate to a list index
-            try:
-                idx = lb.nearest(lb.winfo_pointery() - lb.winfo_rooty())
-                item = lb.get(idx)
-                if item:
-                    p = Path(item)
-                    exists = "✅ Ordner existiert" if p.exists() else "❌ Ordner nicht gefunden"
-                    return f"{item}\n{exists}"
-            except Exception:
-                pass
-            return ""
+        self._ds_inner = tk.Frame(self._ds_canvas, bg=BG_CARD)
+        self._ds_canvas_window = self._ds_canvas.create_window(
+            (0, 0), window=self._ds_inner, anchor="nw"
+        )
 
-        Tooltip(self.dataset_listbox, text_func=_listbox_tip_text)
+        # Keep inner frame width in sync with canvas width
+        def _on_canvas_resize(event):
+            self._ds_canvas.itemconfig(self._ds_canvas_window, width=event.width)
+            self._refresh_dataset_cards()   # re-wrap labels when width changes
+        self._ds_canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Update scroll region whenever the inner frame changes size
+        self._ds_inner.bind(
+            "<Configure>",
+            lambda e: self._ds_canvas.configure(
+                scrollregion=self._ds_canvas.bbox("all")
+            )
+        )
+
+        # Mousewheel scrolling
+        def _on_wheel(event):
+            self._ds_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._ds_canvas.bind("<MouseWheel>", _on_wheel)
+        self._ds_inner.bind("<MouseWheel>", _on_wheel)
+
+        # Internal list of paths (source of truth)
+        self._datasets: list[str] = []
+        self._selected_ds_idx: int | None = None
 
         # Add default datasets if they exist
         if DEFAULT_DATA.exists():
-            self.dataset_listbox.insert(tk.END, str(DEFAULT_DATA))
+            self._datasets.append(str(DEFAULT_DATA))
         if COLLECTED_DATA.exists():
-            self.dataset_listbox.insert(tk.END, str(COLLECTED_DATA))
+            self._datasets.append(str(COLLECTED_DATA))
+        self._refresh_dataset_cards()
 
         # Button row
         btn_row = tk.Frame(card, bg=BG_PANEL)
@@ -201,6 +213,87 @@ class TrainGUI:
 
         _bind_hover(add_btn,    BG_DARK, BG_CARD)
         _bind_hover(remove_btn, BG_DARK, BG_CARD)
+
+    def _refresh_dataset_cards(self):
+        """Rebuild the card rows from self._datasets."""
+        # Destroy all existing cards
+        for child in self._ds_inner.winfo_children():
+            child.destroy()
+
+        canvas_w = self._ds_canvas.winfo_width()
+        wrap_px = max(canvas_w - 80, 120)   # leave room for the index badge
+
+        for idx, path in enumerate(self._datasets):
+            is_selected = (idx == self._selected_ds_idx)
+            is_primary  = (idx == 0)
+
+            bg = ACCENT if is_selected else BG_PANEL
+            fg = BTN_TEXT if is_selected else FG_TEXT
+            fg_badge = BTN_TEXT if is_selected else (COLOR_OK if is_primary else FG_MUTED)
+            badge_bg = ACCENT_HOVER if is_selected else BG_CARD
+
+            row = tk.Frame(
+                self._ds_inner, bg=bg,
+                pady=7, padx=8, cursor="hand2",
+            )
+            row.pack(fill=tk.X, padx=6, pady=(0, 4))
+
+            # Index / role badge
+            badge_text = "① Primär" if is_primary else f"  {idx + 1}  "
+            tk.Label(
+                row, text=badge_text,
+                bg=badge_bg, fg=fg_badge,
+                font=("Helvetica", 9, "bold"),
+                padx=5, pady=2,
+            ).pack(side=tk.LEFT, anchor="nw", padx=(0, 8))
+
+            # Path label – wraps to multiple lines
+            p = Path(path)
+            exists_mark = " ✅" if p.exists() else " ❌"
+            path_lbl = tk.Label(
+                row, text=path + exists_mark,
+                bg=bg, fg=fg,
+                font=("Helvetica", 10),
+                anchor="w", justify="left",
+                wraplength=wrap_px,
+            )
+            path_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            # Click anywhere on the row to select it
+            def _select(i=idx):
+                self._selected_ds_idx = i
+                self._refresh_dataset_cards()
+
+            for widget in (row, path_lbl):
+                widget.bind("<Button-1>", lambda e, i=idx: _select(i))
+
+            # Hover highlight (only when not selected)
+            def _enter(e, r=row, i=idx):
+                if i != self._selected_ds_idx:
+                    r.config(bg=BG_CARD)
+                    for w in r.winfo_children():
+                        try: w.config(bg=BG_CARD)
+                        except Exception: pass
+            def _leave(e, r=row, i=idx):
+                if i != self._selected_ds_idx:
+                    r.config(bg=BG_PANEL)
+                    for w in r.winfo_children():
+                        try: w.config(bg=BG_PANEL)
+                        except Exception: pass
+            row.bind("<Enter>", _enter)
+            row.bind("<Leave>", _leave)
+            for w in row.winfo_children():
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
+
+            # Tooltip on path label
+            tip_text = f"{path}\n{'✅ Ordner existiert' if p.exists() else '❌ Ordner nicht gefunden'}"
+            Tooltip(path_lbl, text=tip_text)
+            Tooltip(row,      text=tip_text)
+
+        # Update scroll region
+        self._ds_inner.update_idletasks()
+        self._ds_canvas.configure(scrollregion=self._ds_canvas.bbox("all"))
 
     # ── Model output panel ────────────────────────────────────────────────
 
@@ -377,16 +470,27 @@ class TrainGUI:
         )
         if not folder:
             return
-        # Avoid duplicates
-        existing = list(self.dataset_listbox.get(0, tk.END))
-        if folder not in existing:
-            self.dataset_listbox.insert(tk.END, folder)
+        if folder not in self._datasets:
+            self._datasets.append(folder)
+            self._refresh_dataset_cards()
+            # Scroll to bottom so the new entry is visible
+            self._ds_canvas.after(50, lambda: self._ds_canvas.yview_moveto(1.0))
 
     def _remove_dataset(self):
-        sel = self.dataset_listbox.curselection()
-        if not sel:
+        idx = self._selected_ds_idx
+        if idx is None or idx >= len(self._datasets):
+            messagebox.showinfo(
+                "Nichts ausgewählt",
+                "Bitte zuerst einen Eintrag durch Klicken auswählen."
+            )
             return
-        self.dataset_listbox.delete(sel[0])
+        self._datasets.pop(idx)
+        # Adjust selection
+        if self._datasets:
+            self._selected_ds_idx = max(0, idx - 1)
+        else:
+            self._selected_ds_idx = None
+        self._refresh_dataset_cards()
 
     # ──────────────────────────────────────────────────────────────────────
     # Model path
@@ -413,7 +517,7 @@ class TrainGUI:
             self._cancel_training()
             return
 
-        datasets = list(self.dataset_listbox.get(0, tk.END))
+        datasets = list(self._datasets)
         if not datasets:
             messagebox.showwarning(
                 "Kein Datensatz",
