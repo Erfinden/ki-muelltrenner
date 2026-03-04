@@ -583,17 +583,44 @@ class PredictGUI:
             return
         if new_idx == self.current_camera_index:
             return
-        new_cap = cv2.VideoCapture(new_idx)
-        if not new_cap.isOpened():
-            messagebox.showerror("Kamera-Fehler", f"Kamera {new_idx} nicht verfügbar.")
-            self.camera_var.set(f"Gerät {self.current_camera_index}")
-            return
-        new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
-        new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+        # Disable combobox while switching so the user can't trigger it again
+        self._cam_combo.config(state=tk.DISABLED)
+        self.status_var.set(f"Wechsle zu Kamera {new_idx} …")
+
+        def _worker():
+            _backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+            with _suppress_camera_errors():
+                new_cap = cv2.VideoCapture(new_idx, _backend)
+            if not new_cap.isOpened():
+                self.root.after(0, lambda: self._on_camera_switch_failed(new_idx, "konnte nicht geöffnet werden"))
+                return
+            new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
+            new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+            ret, _ = new_cap.read()
+            if not ret:
+                new_cap.release()
+                self.root.after(0, lambda: self._on_camera_switch_failed(new_idx, "liefert kein Bild"))
+                return
+            self.root.after(0, lambda: self._on_camera_switch_ready(new_idx, new_cap))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_camera_switch_ready(self, new_idx, new_cap):
+        """Called on the main thread when the new camera opened successfully."""
         if self.cap and self.cap.isOpened():
             self.cap.release()
         self.cap = new_cap
         self.current_camera_index = new_idx
+        self._cam_combo.config(state="readonly")
+        self.status_var.set('Bereit – klicke "Prüfen" um ein Bild aufzunehmen.')
+
+    def _on_camera_switch_failed(self, new_idx, reason):
+        """Called on the main thread when the new camera could not be opened."""
+        messagebox.showerror("Kamera-Fehler", f"Kamera {new_idx} nicht verfügbar: {reason}.")
+        self.camera_var.set(f"Gerät {self.current_camera_index}")
+        self._cam_combo.config(state="readonly")
+        self.status_var.set('Bereit – klicke "Prüfen" um ein Bild aufzunehmen.')
 
     # ──────────────────────────────────────────────────────────────────────────
     # Arduino helpers
