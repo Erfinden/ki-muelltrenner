@@ -87,11 +87,12 @@ class FastLabelingApp:
         self.icon_image = None
         self._set_window_icon()
 
-        # Video capture
+        # Video capture – open device 0 immediately so the window appears at once.
+        # The full camera scan runs in the background (see _detect_cameras_async).
         self.current_camera_index = 0
-        self.available_cameras = self._detect_cameras()
-        
-        self.cap = cv2.VideoCapture(self.current_camera_index)
+        self.available_cameras    = [0]
+        _backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+        self.cap = cv2.VideoCapture(self.current_camera_index, _backend)
         if not self.cap.isOpened():
             messagebox.showerror("Camera error", f"Could not open webcam (device {self.current_camera_index}).")
             root.destroy()
@@ -122,24 +123,63 @@ class FastLabelingApp:
         self._load_existing_labels()
         self._bring_to_front()
         self._update_frame()
+        # Scan for all cameras in the background; updates combobox when done
+        self.root.after(200, self._detect_cameras_async)
+
+    # ── Camera detection ───────────────────────────────────────────────────
+
+    def _detect_cameras_async(self):
+        """Run _detect_cameras() in a daemon thread; update the combobox when done."""
+        def _worker():
+            found = self._detect_cameras()
+            self.root.after(0, lambda: self._on_cameras_detected(found))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_cameras_detected(self, cameras):
+        """Called on the main thread once background detection finishes."""
+        self.available_cameras = cameras
+        values = [f"Gerät {i}" for i in cameras]
+        self.camera_menu.config(values=values)
+        current = self.camera_var.get()
+        if current not in values:
+            self.camera_var.set(values[0] if values else "")
 
     def _detect_cameras(self):
-        """Probe camera indices 0-4, stopping after 2 consecutive failures."""
+        """Probe indices 0-4. Each probe runs in its own thread with a 2-second
+        timeout so a hanging VideoCapture call (common on some Windows setups)
+        never blocks the application. Stops after 2 consecutive failures."""
+        _backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
         cameras = []
         consecutive_fails = 0
+
+        def _probe(idx):
+            try:
+                with _suppress_camera_errors():
+                    cap = cv2.VideoCapture(idx, _backend)
+                    if cap.isOpened():
+                        ret, _ = cap.read()
+                        cap.release()
+                        return bool(ret)
+            except Exception:
+                pass
+            return False
+
         for i in range(5):
-            with _suppress_camera_errors():
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    ret, _ = cap.read()
-                    cap.release()
-                    if ret:
-                        cameras.append(i)
-                        consecutive_fails = 0
-                        continue
-            consecutive_fails += 1
-            if consecutive_fails >= 2:
-                break
+            found = [False]
+            t = threading.Thread(
+                target=lambda i=i: found.__setitem__(0, _probe(i)),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=2.0)   # abandon the probe if it hangs
+            if found[0]:
+                cameras.append(i)
+                consecutive_fails = 0
+            else:
+                consecutive_fails += 1
+                if consecutive_fails >= 2:
+                    break
+
         return cameras if cameras else [0]
 
     def _build_ui(self):
@@ -161,24 +201,27 @@ class FastLabelingApp:
         control_frame = ttk.Frame(main, width=200)
         control_frame.grid(row=0, column=1, sticky="ns", padx=(8, 0))
 
-        # Camera selection
-        if len(self.available_cameras) > 1:
-            camera_frame = ttk.Frame(control_frame)
-            camera_frame.pack(fill=tk.X, pady=(0, 8))
-            ttk.Label(camera_frame, text="Camera:").pack(side=tk.LEFT)
-            self.camera_var = tk.StringVar(value=f"Device {self.current_camera_index}")
-            camera_menu = ttk.Combobox(
-                camera_frame, 
-                textvariable=self.camera_var,
-                values=[f"Device {i}" for i in self.available_cameras],
-                state="readonly",
-                width=10
-            )
-            camera_menu.pack(side=tk.LEFT, padx=(4, 0))
-            camera_menu.bind("<<ComboboxSelected>>", self.switch_camera)
-            
-            sep_cam = ttk.Separator(control_frame, orient=tk.HORIZONTAL)
-            sep_cam.pack(fill=tk.X, pady=4)
+        # Camera selection – always visible; updated after background detection
+        camera_frame = ttk.Frame(control_frame)
+        camera_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(camera_frame, text="Kamera:").pack(side=tk.LEFT)
+        self.camera_var = tk.StringVar(value=f"Gerät {self.current_camera_index}")
+        self.camera_menu = ttk.Combobox(
+            camera_frame,
+            textvariable=self.camera_var,
+            values=[f"Gerät {self.current_camera_index}"],
+            state="readonly",
+            width=10
+        )
+        self.camera_menu.pack(side=tk.LEFT, padx=(4, 0))
+        self.camera_menu.bind("<<ComboboxSelected>>", self.switch_camera)
+        ttk.Button(
+            camera_frame, text="↻", width=2,
+            command=self._detect_cameras_async
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        sep_cam = ttk.Separator(control_frame, orient=tk.HORIZONTAL)
+        sep_cam.pack(fill=tk.X, pady=4)
 
         dataset_frame = ttk.Frame(control_frame)
         dataset_frame.pack(fill=tk.X, pady=(0, 8))
@@ -381,16 +424,17 @@ class FastLabelingApp:
     def switch_camera(self, event=None):
         """Switch to a different camera device."""
         selected = self.camera_var.get()
-        # Extract device number from "Device X"
+        # Extract device number from "Gerät X"
         try:
             new_index = int(selected.split()[-1])
             if new_index == self.current_camera_index:
                 return
             # Open new camera and validate before swapping
-            new_cap = cv2.VideoCapture(new_index)
+            _backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+            new_cap = cv2.VideoCapture(new_index, _backend)
             if not new_cap.isOpened():
                 messagebox.showerror("Camera error", f"Could not open camera device {new_index}.")
-                self.camera_var.set(f"Device {self.current_camera_index}")
+                self.camera_var.set(f"Gerät {self.current_camera_index}")
                 return
 
             new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
@@ -399,7 +443,7 @@ class FastLabelingApp:
             if not ret:
                 new_cap.release()
                 messagebox.showerror("Camera error", f"Camera device {new_index} is not available.")
-                self.camera_var.set(f"Device {self.current_camera_index}")
+                self.camera_var.set(f"Gerät {self.current_camera_index}")
                 return
 
             # Swap cameras

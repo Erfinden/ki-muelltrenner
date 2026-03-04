@@ -486,48 +486,77 @@ class PredictGUI:
         # 2. Build label rows now that we know the vocab
         self._build_label_rows()
 
-        # 3. Detect cameras
-        self.available_cameras = self._detect_cameras()
-        if not self.available_cameras:
+        # 3. Detect cameras in background so the UI stays responsive
+        self.status_var.set("Suche Kameras …")
+        self.root.update_idletasks()
+
+        def _camera_worker():
+            cameras = self._detect_cameras()
+            self.root.after(0, lambda: self._on_cameras_ready(cameras))
+
+        threading.Thread(target=_camera_worker, daemon=True).start()
+
+    def _on_cameras_ready(self, cameras):
+        """Called on the main thread after background camera detection finishes."""
+        self.available_cameras = cameras
+        if not cameras:
             messagebox.showerror("Kamera-Fehler", "Keine Kamera gefunden.")
             self.root.destroy()
             return
 
-        # Always populate & show camera selector
-        self._refresh_cameras()
+        # Populate selector & open first camera
+        values = [f"Gerät {i}" for i in cameras]
+        self._cam_combo.config(values=values)
+        self.camera_var.set(values[0])
+        self._open_camera(cameras[0])
 
-        # 4. Open camera
-        self._open_camera(self.available_cameras[0])
-
-        # 5. Ensure captures dir exists
+        # Enable button & start preview loop
         CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
-
-        # 6. Enable button & start preview loop
         self.pruefen_btn.config(state=tk.NORMAL)
-        self.status_var.set('Bereit \u2013 klicke "Pr\u00fcfen" um ein Bild aufzunehmen.')
+        self.status_var.set('Bereit – klicke "Prüfen" um ein Bild aufzunehmen.')
         self._update_frame()
 
     def _detect_cameras(self):
-        """Probe camera indices 0-4, stopping after 2 consecutive failures."""
+        """Probe indices 0-4. Each probe runs in its own thread with a 2-second
+        timeout so a hanging VideoCapture call (common on some Windows setups)
+        never blocks the application. Stops after 2 consecutive failures."""
+        _backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
         cameras = []
         consecutive_fails = 0
+
+        def _probe(idx):
+            try:
+                with _suppress_camera_errors():
+                    cap = cv2.VideoCapture(idx, _backend)
+                    if cap.isOpened():
+                        ret, _ = cap.read()
+                        cap.release()
+                        return bool(ret)
+            except Exception:
+                pass
+            return False
+
         for i in range(5):
-            with _suppress_camera_errors():
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    ret, _ = cap.read()
-                    cap.release()
-                    if ret:
-                        cameras.append(i)
-                        consecutive_fails = 0
-                        continue
-            consecutive_fails += 1
-            if consecutive_fails >= 2:
-                break
+            found = [False]
+            t = threading.Thread(
+                target=lambda i=i: found.__setitem__(0, _probe(i)),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=2.0)   # abandon the probe if it hangs
+            if found[0]:
+                cameras.append(i)
+                consecutive_fails = 0
+            else:
+                consecutive_fails += 1
+                if consecutive_fails >= 2:
+                    break
+
         return cameras if cameras else [0]
 
     def _open_camera(self, index: int):
-        cap = cv2.VideoCapture(index)
+        _backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+        cap = cv2.VideoCapture(index, _backend)
         if not cap.isOpened():
             messagebox.showerror("Kamera-Fehler", f"Kamera {index} konnte nicht geöffnet werden.")
             return
@@ -537,18 +566,14 @@ class PredictGUI:
         self.current_camera_index = index
 
     def _refresh_cameras(self):
-        """Re-detect cameras and populate the combobox; open first if none active yet."""
-        self.available_cameras = self._detect_cameras()
-        values = [f"Gerät {i}" for i in self.available_cameras]
-        self._cam_combo.config(values=values)
-        current = self.camera_var.get()
-        if current not in values:
-            first = values[0] if values else ""
-            self.camera_var.set(first)
-        # If no camera is open yet, open the first detected one
-        if (self.cap is None or not self.cap.isOpened()) and self.available_cameras:
-            self._open_camera(self.available_cameras[0])
-            self.camera_var.set(f"Gerät {self.available_cameras[0]}")
+        """Re-detect cameras in the background and update the combobox."""
+        self._cam_combo.config(state=tk.DISABLED)
+
+        def _worker():
+            cameras = self._detect_cameras()
+            self.root.after(0, lambda: self._on_cameras_ready(cameras))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _switch_camera(self, event=None):
         selected = self.camera_var.get()
