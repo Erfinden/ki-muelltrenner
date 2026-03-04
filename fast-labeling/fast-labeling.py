@@ -202,11 +202,27 @@ class FastLabelingApp:
         led_frame = ttk.LabelFrame(control_frame, text="Beleuchtung")
         led_frame.pack(fill=tk.X, pady=(0, 8))
 
+        # Status row
         arduino_row = ttk.Frame(led_frame)
         arduino_row.pack(fill=tk.X, padx=4, pady=(4, 0))
         self._ard_status_lbl = ttk.Label(arduino_row, text="● Nicht verbunden",
                                          foreground="#f87171")
         self._ard_status_lbl.pack(side=tk.LEFT)
+
+        # Port selection row
+        port_row = ttk.Frame(led_frame)
+        port_row.pack(fill=tk.X, padx=4, pady=(4, 0))
+        ttk.Label(port_row, text="Port:").pack(side=tk.LEFT)
+        self._port_var = tk.StringVar(value="Auto")
+        self._port_combo = ttk.Combobox(
+            port_row, textvariable=self._port_var,
+            width=16, font=("Helvetica", 9)
+        )
+        self._port_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 2))
+        ttk.Button(
+            port_row, text="↻", width=2,
+            command=self._refresh_ports
+        ).pack(side=tk.LEFT)
 
         self._connect_btn = ttk.Button(
             led_frame, text="Verbinden", command=self._toggle_arduino_connection
@@ -220,6 +236,8 @@ class FastLabelingApp:
             command=self._toggle_led,
         )
         self._light_btn.pack(fill=tk.X, padx=4, pady=(2, 6))
+
+        self._refresh_ports()
 
         sep = ttk.Separator(control_frame, orient=tk.HORIZONTAL)
         sep.pack(fill=tk.X, pady=4)
@@ -502,6 +520,18 @@ class FastLabelingApp:
             else:
                 self._connect_arduino()
 
+    def _refresh_ports(self):
+        """Populate the port combobox with currently available serial ports."""
+        try:
+            from serial.tools import list_ports
+            ports = ["Auto"] + [p.device for p in list_ports.comports()]
+        except ImportError:
+            ports = ["Auto"]
+        current = self._port_var.get()
+        self._port_combo["values"] = ports
+        if current not in ports:
+            self._port_var.set("Auto")
+
     def _connect_arduino(self):
         """Try to connect to the Arduino (called with _arduino_lock held)."""
         try:
@@ -514,12 +544,15 @@ class FastLabelingApp:
             )
             return
 
+        port_selection = self._port_var.get()
+        port = None if port_selection == "Auto" else port_selection
+
         self._ard_status_lbl.config(text="● Verbinde …", foreground="#facc15")
         self._connect_btn.config(state=tk.DISABLED)
         self.root.update_idletasks()
 
         try:
-            ctrl = TrashBinController()
+            ctrl = TrashBinController(port=port)
             self._arduino = ctrl
             self._ard_status_lbl.config(
                 text=f"● Verbunden ({ctrl._serial.name})", foreground="#4ade80"
