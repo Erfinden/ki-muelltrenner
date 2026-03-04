@@ -1005,6 +1005,14 @@ def main():
     root.geometry("1020x680")
     root.minsize(800, 560)
 
+    # Set window icon
+    try:
+        _icon_path = Path(__file__).parent.parent / "image-recognition-icon.png"
+        _icon_img = ImageTk.PhotoImage(Image.open(_icon_path))
+        root.iconphoto(True, _icon_img)
+    except Exception:
+        pass  # icon is optional – don't crash if file is missing
+
     # Dark title bar on macOS (requires Tk ≥ 8.6.12 or Python ≥ 3.11 on arm64)
     try:
         root.tk.call("::tk::unsupported::MacWindowStyle", "style", root._w, "document", "closeBox")
