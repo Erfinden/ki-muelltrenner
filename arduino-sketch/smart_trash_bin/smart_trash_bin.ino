@@ -90,6 +90,11 @@ void setup() {
   for (uint8_t i = 0; i < 4; i++) {
     servos[i].attach(SERVO_PIN[i]);
   }
+  
+  ledOn = true;
+  fill_solid(leds, NUM_LEDS, CRGB::White);
+  FastLED.show();
+  Serial.println("OK LED ON");
 
   closeLid(1);
   closeLid(2);

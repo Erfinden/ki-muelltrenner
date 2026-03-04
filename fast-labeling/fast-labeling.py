@@ -213,7 +213,7 @@ class FastLabelingApp:
         port_row = ttk.Frame(led_frame)
         port_row.pack(fill=tk.X, padx=4, pady=(4, 0))
         ttk.Label(port_row, text="Port:").pack(side=tk.LEFT)
-        self._port_var = tk.StringVar(value="Auto")
+        self._port_var = tk.StringVar(value="")
         self._port_combo = ttk.Combobox(
             port_row, textvariable=self._port_var,
             width=16, font=("Helvetica", 9)
@@ -524,13 +524,15 @@ class FastLabelingApp:
         """Populate the port combobox with currently available serial ports."""
         try:
             from serial.tools import list_ports
-            ports = ["Auto"] + [p.device for p in list_ports.comports()]
+            ports = [p.device for p in list_ports.comports()]
         except ImportError:
-            ports = ["Auto"]
-        current = self._port_var.get()
+            ports = []
         self._port_combo["values"] = ports
-        if current not in ports:
-            self._port_var.set("Auto")
+        current = self._port_var.get()
+        if ports and current not in ports:
+            self._port_var.set(ports[0])
+        elif not ports:
+            self._port_var.set("")
 
     def _connect_arduino(self):
         """Try to connect to the Arduino (called with _arduino_lock held)."""
@@ -544,8 +546,7 @@ class FastLabelingApp:
             )
             return
 
-        port_selection = self._port_var.get()
-        port = None if port_selection == "Auto" else port_selection
+        port = self._port_var.get() or None
 
         self._ard_status_lbl.config(text="● Verbinde …", foreground="#facc15")
         self._connect_btn.config(state=tk.DISABLED)

@@ -327,7 +327,7 @@ class PredictGUI:
             font=("Helvetica", 10), width=5, anchor="w"
         ).pack(side=tk.LEFT)
 
-        self._port_var = tk.StringVar(value="Auto")
+        self._port_var = tk.StringVar(value="")
         self._port_combo = ttk.Combobox(
             port_row, textvariable=self._port_var,
             width=20, font=("Helvetica", 10)
@@ -527,13 +527,15 @@ class PredictGUI:
         """Populate the port combobox with currently available serial ports."""
         try:
             from serial.tools import list_ports
-            ports = ["Auto"] + [p.device for p in list_ports.comports()]
+            ports = [p.device for p in list_ports.comports()]
         except ImportError:
-            ports = ["Auto"]
-        current = self._port_var.get()
+            ports = []
         self._port_combo["values"] = ports
-        if current not in ports:
-            self._port_var.set("Auto")
+        current = self._port_var.get()
+        if ports and current not in ports:
+            self._port_var.set(ports[0])
+        elif not ports:
+            self._port_var.set("")
 
     def _toggle_arduino_connection(self):
         with self._arduino_lock:
@@ -554,8 +556,7 @@ class PredictGUI:
             )
             return
 
-        port_selection = self._port_var.get()
-        port = None if port_selection == "Auto" else port_selection
+        port = self._port_var.get() or None
 
         self._ard_status_lbl.config(text="Verbinde …")
         self._connect_btn.config(state=tk.DISABLED)
