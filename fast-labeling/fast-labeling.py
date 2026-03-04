@@ -130,13 +130,13 @@ class FastLabelingApp:
         for i in range(5):
             with _suppress_camera_errors():
                 cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                cap.release()
-                if ret:
-                    cameras.append(i)
-                    consecutive_fails = 0
-                    continue
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    cap.release()
+                    if ret:
+                        cameras.append(i)
+                        consecutive_fails = 0
+                        continue
             consecutive_fails += 1
             if consecutive_fails >= 2:
                 break
