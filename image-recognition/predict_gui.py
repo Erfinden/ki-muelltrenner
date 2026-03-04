@@ -368,6 +368,44 @@ class PredictGUI:
         )
         self._send_chk.pack(fill=tk.X, pady=(8, 0))
 
+        # ── Manual test buttons ───────────────────────────────────────────────
+        tk.Frame(card, bg=BG_PANEL, height=1).pack(fill=tk.X, pady=(10, 0))
+        tk.Label(
+            card, text="Manueller Test", bg=BG_CARD, fg=FG_MUTED,
+            font=("Helvetica", 9), anchor="w"
+        ).pack(fill=tk.X, pady=(6, 2))
+
+        lid_row = tk.Frame(card, bg=BG_CARD)
+        lid_row.pack(fill=tk.X)
+        lid_row.columnconfigure(0, weight=1)
+        lid_row.columnconfigure(1, weight=1)
+
+        self._lid1_btn = tk.Button(
+            lid_row,
+            text="🗑  Deckel 1",
+            font=("Helvetica", 11, "bold"),
+            bg="#1a3a4a", fg=BTN_TEXT,
+            activebackground="#1f4f66", activeforeground=BTN_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=6, pady=6,
+            state=tk.DISABLED,
+            command=lambda: self._manual_open_lid(1),
+        )
+        self._lid1_btn.grid(row=0, column=0, sticky="ew", padx=(0, 3), pady=(0, 0))
+
+        self._lid2_btn = tk.Button(
+            lid_row,
+            text="🗑  Deckel 2",
+            font=("Helvetica", 11, "bold"),
+            bg="#1a3a4a", fg=BTN_TEXT,
+            activebackground="#1f4f66", activeforeground=BTN_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=6, pady=6,
+            state=tk.DISABLED,
+            command=lambda: self._manual_open_lid(2),
+        )
+        self._lid2_btn.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
         # Populate port list
         self._refresh_ports()
 
@@ -514,6 +552,8 @@ class PredictGUI:
             self._ard_status_lbl.config(text=f"Verbunden ({ctrl._serial.name})")
             self._connect_btn.config(text="Trennen", state=tk.NORMAL,
                                      bg="#3d1f1f", activebackground="#5a2b2b")
+            self._lid1_btn.config(state=tk.NORMAL)
+            self._lid2_btn.config(state=tk.NORMAL)
         except Exception as exc:
             self._arduino = None
             self._ard_status_dot.config(fg=COLOR_DISCONNECTED)
@@ -533,9 +573,14 @@ class PredictGUI:
         self._ard_status_lbl.config(text="Nicht verbunden")
         self._connect_btn.config(text="Verbinden", bg="#1e3a5f",
                                  activebackground="#2a4f80", state=tk.NORMAL)
+        self._lid1_btn.config(state=tk.DISABLED)
+        self._lid2_btn.config(state=tk.DISABLED)
 
     def _send_lid_command(self, label: str):
-        """Open the correct lid for *label* if Arduino is connected and checkbox is on."""
+        """Open the correct lid for *label* if Arduino is connected and checkbox is on.
+
+        After 2 seconds the lid is automatically closed again.
+        """
         if not self._send_to_arduino_var.get():
             return
         with self._arduino_lock:
@@ -557,12 +602,71 @@ class PredictGUI:
                 # Mark as disconnected so the user reconnects
                 self._arduino = None
                 self.root.after(0, self._refresh_arduino_ui_disconnected)
+                return
+
+        # Schedule closing the lid after 2 seconds in a background thread so
+        # the serial read inside close_lid() doesn't block the UI.
+        def _auto_close():
+            time.sleep(2)
+            with self._arduino_lock:
+                if self._arduino is None:
+                    return  # disconnected in the meantime – nothing to do
+                try:
+                    self._arduino.close_lid(lid)
+                except Exception:
+                    pass  # best-effort; connection errors are handled elsewhere
+
+        t = threading.Thread(target=_auto_close, daemon=True)
+        t.start()
 
     def _refresh_arduino_ui_disconnected(self):
         self._ard_status_dot.config(fg=COLOR_DISCONNECTED)
         self._ard_status_lbl.config(text="Verbindung verloren")
         self._connect_btn.config(text="Verbinden", bg="#1e3a5f",
                                  activebackground="#2a4f80", state=tk.NORMAL)
+        self._lid1_btn.config(state=tk.DISABLED)
+        self._lid2_btn.config(state=tk.DISABLED)
+
+    def _manual_open_lid(self, lid: int):
+        """Manually open *lid* (1 or 2) and close it automatically after 2 seconds.
+
+        Both lid buttons are disabled for the full open→close cycle to prevent
+        accidental double-clicks.
+        """
+        with self._arduino_lock:
+            if self._arduino is None:
+                return
+            try:
+                self._arduino.open_lid(lid)
+            except Exception as exc:
+                self._arduino = None
+                self.root.after(0, self._refresh_arduino_ui_disconnected)
+                messagebox.showerror("Arduino-Fehler", str(exc))
+                return
+
+        # Disable both buttons for the duration of the open→close cycle
+        self._lid1_btn.config(state=tk.DISABLED)
+        self._lid2_btn.config(state=tk.DISABLED)
+        self.status_var.set(f"Deckel {lid} geöffnet – schließt in 2 s …")
+
+        def _auto_close():
+            time.sleep(2)
+            with self._arduino_lock:
+                if self._arduino is None:
+                    # Connection lost – UI already updated by disconnect handler
+                    return
+                try:
+                    self._arduino.close_lid(lid)
+                    self.root.after(0, lambda: self.status_var.set(f"Deckel {lid} geschlossen."))
+                except Exception:
+                    pass
+            # Re-enable buttons on the main thread regardless of outcome
+            self.root.after(0, lambda: (
+                self._lid1_btn.config(state=tk.NORMAL),
+                self._lid2_btn.config(state=tk.NORMAL),
+            ))
+
+        threading.Thread(target=_auto_close, daemon=True).start()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Label rows (built after model is loaded so we know the vocab)
