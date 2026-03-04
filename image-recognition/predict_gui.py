@@ -25,10 +25,32 @@ import cv2
 import time
 import shutil
 import threading
+import contextlib
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
 from PIL import Image, ImageTk
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def _suppress_camera_errors():
+    """Silence C-level stdout/stderr (OpenCV out-of-bound messages) during camera probing."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved = [os.dup(1), os.dup(2)]
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved[0], 1)
+        os.dup2(saved[1], 2)
+        os.close(saved[0])
+        os.close(saved[1])
+        os.close(devnull_fd)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -486,14 +508,22 @@ class PredictGUI:
         self._update_frame()
 
     def _detect_cameras(self):
+        """Probe camera indices 0-4, stopping after 2 consecutive failures."""
         cameras = []
-        for i in range(10):
-            cap = cv2.VideoCapture(i)
+        consecutive_fails = 0
+        for i in range(5):
+            with _suppress_camera_errors():
+                cap = cv2.VideoCapture(i)
             if cap.isOpened():
                 ret, _ = cap.read()
+                cap.release()
                 if ret:
                     cameras.append(i)
-                cap.release()
+                    consecutive_fails = 0
+                    continue
+            consecutive_fails += 1
+            if consecutive_fails >= 2:
+                break
         return cameras if cameras else [0]
 
     def _open_camera(self, index: int):

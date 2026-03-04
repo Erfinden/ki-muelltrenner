@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import threading
+import contextlib
 import cv2
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -33,6 +34,23 @@ BUTTON_WIDTH = 12
 _CONTROLLER_DIR = Path(__file__).parent.parent / "arduino-sketch"
 if str(_CONTROLLER_DIR) not in sys.path:
     sys.path.insert(0, str(_CONTROLLER_DIR))
+
+
+@contextlib.contextmanager
+def _suppress_camera_errors():
+    """Silence C-level stdout/stderr (OpenCV out-of-bound messages) during camera probing."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved = [os.dup(1), os.dup(2)]
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved[0], 1)
+        os.dup2(saved[1], 2)
+        os.close(saved[0])
+        os.close(saved[1])
+        os.close(devnull_fd)
 
 
 class ToolTip:
@@ -106,15 +124,22 @@ class FastLabelingApp:
         self._update_frame()
 
     def _detect_cameras(self):
-        """Detect available camera indices."""
+        """Probe camera indices 0-4, stopping after 2 consecutive failures."""
         cameras = []
-        for i in range(10):  # Check first 10 indices
-            cap = cv2.VideoCapture(i)
+        consecutive_fails = 0
+        for i in range(5):
+            with _suppress_camera_errors():
+                cap = cv2.VideoCapture(i)
             if cap.isOpened():
                 ret, _ = cap.read()
+                cap.release()
                 if ret:
                     cameras.append(i)
-                cap.release()
+                    consecutive_fails = 0
+                    continue
+            consecutive_fails += 1
+            if consecutive_fails >= 2:
+                break
         return cameras if cameras else [0]
 
     def _build_ui(self):
