@@ -32,7 +32,7 @@ from pathlib import Path
 
 _HERE          = Path(__file__).parent
 TRAIN_SCRIPT   = _HERE / "train.py"
-DEFAULT_DATA   = _HERE / "data"
+DEFAULT_DATA   = _HERE.parent / "fast-labeling" / "dataset"
 DEFAULT_MODEL  = _HERE / "models" / "trash_classifier.pkl"
 COLLECTED_DATA = _HERE / "collected-data"
 
