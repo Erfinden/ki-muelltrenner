@@ -1,15 +1,23 @@
 /**
- * Smart Trash Bin – Servo Controller
- * ====================================
- * Controls 4 servo motors distributed across 2 lids.
+ * Smart Trash Bin – Servo + LED Controller
+ * ==========================================
+ * Controls 4 servo motors distributed across 2 lids and an addressable
+ * LED strip (WS2812B / NeoPixel-compatible) via the FastLED library.
  *
- *   Lid 1  →  Servo 0 (pin 9)  &  Servo 1 (pin 10)   [opposite sides]
- *   Lid 2  →  Servo 2 (pin 11) &  Servo 3 (pin 3)    [opposite sides]
+ *   Lid 1  →  Servo 0 (pin 9)  & Servo 1 (pin 10)   [opposite sides]
+ *   Lid 2  →  Servo 2 (pin 11) & Servo 3 (pin 3)    [opposite sides]
+ *   LED strip data line → Pin 2  (WS2812B / SK6812 / compatible)
  *
  * Because each pair is mounted on opposite sides of the lid, opening
  * requires the two servos to rotate in mirror directions:
  *   Servo 0 / 2  →  DEFAULT 45°  |  OPEN 90°
  *   Servo 1 / 3  →  DEFAULT 45°  |  OPEN  0°
+ *
+ * Library dependencies
+ * ---------------------
+ *   Servo   – bundled with Arduino IDE
+ *   FastLED – install via Library Manager:  Sketch → Include Library →
+ *             Manage Libraries… → search "FastLED" → Install
  *
  * Serial Protocol (USB, 9600 baud)
  * ---------------------------------
@@ -21,6 +29,8 @@
  *   CLOSE 1   → closes lid 1
  *   CLOSE 2   → closes lid 2
  *   CLOSE ALL → closes both lids
+ *   LED ON    → turns the LED strip on (full white)
+ *   LED OFF   → turns the LED strip off
  *
  * Every command receives a single-line response ending with '\n':
  *   OK <message>   – success
@@ -32,14 +42,26 @@
  *   Servo 1 signal → Pin 10   (Lid 1, side B – mirror)
  *   Servo 2 signal → Pin 11   (Lid 2, side A)
  *   Servo 3 signal → Pin  3   (Lid 2, side B – mirror)
+ *   LED strip data → Pin  2   (add a 300–470 Ω series resistor recommended)
  *   All servo GND  → Arduino GND
  *   All servo VCC  → External 5 V supply (do NOT use the Arduino 5 V rail)
+ *   LED strip GND  → Arduino GND (shared ground with power supply)
+ *   LED strip VCC  → 5 V power supply (NOT the Arduino 5V pin for long strips)
  */
 
 #include <Servo.h>
+#include <FastLED.h>
 
-// ── Pin assignment ─────────────────────────────────────────────────────────
+// ── Pin & LED strip configuration ──────────────────────────────────────────
 const uint8_t SERVO_PIN[4] = {9, 10, 11, 3};
+const uint8_t LED_DATA_PIN = 2;
+
+// ▶ Adjust NUM_LEDS to match the actual number of LEDs on your strip
+#define NUM_LEDS    13
+#define LED_TYPE    WS2812B
+#define COLOR_ORDER GRB
+
+CRGB leds[NUM_LEDS];
 
 // ── Servo positions ────────────────────────────────────────────────────────
 //   Index 0 / 2  = "side A"  servos  →  mirrors of side B
@@ -49,13 +71,21 @@ const int POS_DEFAULT_B = 45;   // closed position for side-B servos
 const int POS_OPEN_A    = 90;   // open position  for side-A servos
 const int POS_OPEN_B    =  0;   // open position  for side-B servos (mirror)
 
-// ── Servo objects ──────────────────────────────────────────────────────────
+// ── State ──────────────────────────────────────────────────────────────────
 Servo    servos[4];
 String   inputBuffer = "";
+bool     ledOn       = false;   // LED strip state (off by default)
 
 // ══════════════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(9600);
+
+  // Initialise FastLED – strip starts off
+  FastLED.addLeds<LED_TYPE, LED_DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS)
+         .setCorrection(TypicalLEDStrip);
+  FastLED.setBrightness(200);   // 0–255; reduce to limit current draw if needed
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
 
   for (uint8_t i = 0; i < 4; i++) {
     servos[i].attach(SERVO_PIN[i]);
@@ -125,8 +155,26 @@ void handleCommand(const String& cmd) {
       Serial.println("ERR Usage: CLOSE 1 | CLOSE 2 | CLOSE ALL");
     }
 
+  } else if (upper.startsWith("LED")) {
+    String arg = upper.substring(3);
+    arg.trim();
+
+    if (arg == "ON") {
+      ledOn = true;
+      fill_solid(leds, NUM_LEDS, CRGB::White);
+      FastLED.show();
+      Serial.println("OK LED ON");
+    } else if (arg == "OFF") {
+      ledOn = false;
+      fill_solid(leds, NUM_LEDS, CRGB::Black);
+      FastLED.show();
+      Serial.println("OK LED OFF");
+    } else {
+      Serial.println("ERR Usage: LED ON | LED OFF");
+    }
+
   } else {
-    Serial.println("ERR Unknown command. Use OPEN or CLOSE.");
+    Serial.println("ERR Unknown command. Use OPEN, CLOSE or LED.");
   }
 }
 

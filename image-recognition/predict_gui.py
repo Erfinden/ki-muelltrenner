@@ -134,6 +134,7 @@ class PredictGUI:
         # ── Arduino state ─────────────────────────────────────────────────────
         self._arduino = None          # TrashBinController instance (or None)
         self._arduino_lock = threading.Lock()
+        self._led_on = False          # LED strip state (off by default)
 
         # ── Label widgets (populated after model load) ────────────────────────
         self._bar_vars:   dict[str, tk.DoubleVar]    = {}
@@ -406,6 +407,21 @@ class PredictGUI:
         )
         self._lid2_btn.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
+        # ── LED light toggle ─────────────────────────────────────────────────
+        tk.Frame(card, bg=BG_PANEL, height=1).pack(fill=tk.X, pady=(8, 0))
+        self._light_btn = tk.Button(
+            card,
+            text="💡  Licht: AUS",
+            font=("Helvetica", 11, "bold"),
+            bg="#2a2a3a", fg=FG_MUTED,
+            activebackground="#3a3a4a", activeforeground=FG_TEXT,
+            relief=tk.FLAT, bd=0, cursor="hand2",
+            padx=6, pady=6,
+            state=tk.DISABLED,
+            command=self._toggle_led,
+        )
+        self._light_btn.pack(fill=tk.X, pady=(6, 0))
+
         # Populate port list
         self._refresh_ports()
 
@@ -554,6 +570,7 @@ class PredictGUI:
                                      bg="#3d1f1f", activebackground="#5a2b2b")
             self._lid1_btn.config(state=tk.NORMAL)
             self._lid2_btn.config(state=tk.NORMAL)
+            self._light_btn.config(state=tk.NORMAL)
         except Exception as exc:
             self._arduino = None
             self._ard_status_dot.config(fg=COLOR_DISCONNECTED)
@@ -575,6 +592,10 @@ class PredictGUI:
                                  activebackground="#2a4f80", state=tk.NORMAL)
         self._lid1_btn.config(state=tk.DISABLED)
         self._lid2_btn.config(state=tk.DISABLED)
+        # Turn LED off on disconnect (reset state)
+        self._led_on = False
+        self._light_btn.config(state=tk.DISABLED, text="💡  Licht: AUS",
+                               bg="#2a2a3a", fg=FG_MUTED)
 
     def _send_lid_command(self, label: str):
         """Open the correct lid for *label* if Arduino is connected and checkbox is on.
@@ -626,6 +647,31 @@ class PredictGUI:
                                  activebackground="#2a4f80", state=tk.NORMAL)
         self._lid1_btn.config(state=tk.DISABLED)
         self._lid2_btn.config(state=tk.DISABLED)
+        self._led_on = False
+        self._light_btn.config(state=tk.DISABLED, text="💡  Licht: AUS",
+                               bg="#2a2a3a", fg=FG_MUTED)
+
+    def _toggle_led(self):
+        """Toggle the LED strip on/off via Arduino serial command."""
+        with self._arduino_lock:
+            if self._arduino is None:
+                return
+            try:
+                if self._led_on:
+                    self._arduino.led_off()
+                    self._led_on = False
+                else:
+                    self._arduino.led_on()
+                    self._led_on = True
+            except Exception as exc:
+                self._arduino = None
+                self.root.after(0, self._refresh_arduino_ui_disconnected)
+                messagebox.showerror("Arduino-Fehler", str(exc))
+                return
+        if self._led_on:
+            self._light_btn.config(text="💡  Licht: AN", bg="#4a3a00", fg="#facc15")
+        else:
+            self._light_btn.config(text="💡  Licht: AUS", bg="#2a2a3a", fg=FG_MUTED)
 
     def _manual_open_lid(self, lid: int):
         """Manually open *lid* (1 or 2) and close it automatically after 2 seconds.

@@ -13,6 +13,9 @@ Usage example
         bin_ctrl.open_lid(1)
         time.sleep(3)
         bin_ctrl.close_lid(1)
+        bin_ctrl.led_on()
+        time.sleep(2)
+        bin_ctrl.led_off()
 """
 
 import time
@@ -88,6 +91,14 @@ class TrashBinController:
         lid : 1, 2, or 'ALL'
         """
         return self._send(f"CLOSE {lid}")
+
+    def led_on(self) -> str:
+        """Turn the LED strip on (sends 'LED ON')."""
+        return self._send("LED ON")
+
+    def led_off(self) -> str:
+        """Turn the LED strip off (sends 'LED OFF')."""
+        return self._send("LED OFF")
 
     # ── Internal ───────────────────────────────────────────────────────────
 

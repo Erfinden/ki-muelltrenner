@@ -1,10 +1,12 @@
 import os
 import sys
 import time
+import threading
 import cv2
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
+from pathlib import Path
 
 #!/usr/bin/env python3
 """
@@ -26,6 +28,11 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 ENTRY_WIDTH = 28
 BUTTON_WIDTH = 12
+
+# ── Arduino controller path ───────────────────────────────────────────────
+_CONTROLLER_DIR = Path(__file__).parent.parent / "arduino-sketch"
+if str(_CONTROLLER_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONTROLLER_DIR))
 
 
 class ToolTip:
@@ -86,6 +93,11 @@ class FastLabelingApp:
         self.buttons_canvas = None
         self.buttons_scrollbar = None
         self.scrollbar_visible = False
+
+        # ── Arduino / LED state ────────────────────────────────────────────
+        self._arduino      = None
+        self._arduino_lock = threading.Lock()
+        self._led_on       = False
 
         self._build_ui()
         os.makedirs(self.dataset_dir.get(), exist_ok=True)
@@ -185,6 +197,29 @@ class FastLabelingApp:
         self.remove_last_btn.pack(anchor="w")
         status_lbl = ttk.Label(remove_frame, textvariable=self.status_var)
         status_lbl.pack(anchor="w", pady=(4, 0))
+
+        # ── LED / Arduino panel ───────────────────────────────────────────
+        led_frame = ttk.LabelFrame(control_frame, text="Beleuchtung")
+        led_frame.pack(fill=tk.X, pady=(0, 8))
+
+        arduino_row = ttk.Frame(led_frame)
+        arduino_row.pack(fill=tk.X, padx=4, pady=(4, 0))
+        self._ard_status_lbl = ttk.Label(arduino_row, text="● Nicht verbunden",
+                                         foreground="#f87171")
+        self._ard_status_lbl.pack(side=tk.LEFT)
+
+        self._connect_btn = ttk.Button(
+            led_frame, text="Verbinden", command=self._toggle_arduino_connection
+        )
+        self._connect_btn.pack(fill=tk.X, padx=4, pady=(4, 2))
+
+        self._light_btn = ttk.Button(
+            led_frame,
+            text="💡  Licht: AUS",
+            state=tk.DISABLED,
+            command=self._toggle_led,
+        )
+        self._light_btn.pack(fill=tk.X, padx=4, pady=(2, 6))
 
         sep = ttk.Separator(control_frame, orient=tk.HORIZONTAL)
         sep.pack(fill=tk.X, pady=4)
@@ -438,6 +473,18 @@ class FastLabelingApp:
         self.root.after(30, self._update_frame)
 
     def on_close(self):
+        # Turn off LED and disconnect gracefully
+        with self._arduino_lock:
+            if self._arduino is not None:
+                try:
+                    self._arduino.led_off()
+                except Exception:
+                    pass
+                try:
+                    self._arduino.close()
+                except Exception:
+                    pass
+                self._arduino = None
         try:
             if self.cap and self.cap.isOpened():
                 self.cap.release()
@@ -445,6 +492,87 @@ class FastLabelingApp:
             pass
         self.root.quit()
         self.root.destroy()
+
+    # ── Arduino / LED helpers ─────────────────────────────────────────
+
+    def _toggle_arduino_connection(self):
+        with self._arduino_lock:
+            if self._arduino is not None:
+                self._disconnect_arduino()
+            else:
+                self._connect_arduino()
+
+    def _connect_arduino(self):
+        """Try to connect to the Arduino (called with _arduino_lock held)."""
+        try:
+            from trash_bin_controller import TrashBinController
+        except ImportError:
+            messagebox.showerror(
+                "Importfehler",
+                "trash_bin_controller.py nicht gefunden.\n"
+                f"Erwartet in: {_CONTROLLER_DIR}"
+            )
+            return
+
+        self._ard_status_lbl.config(text="● Verbinde …", foreground="#facc15")
+        self._connect_btn.config(state=tk.DISABLED)
+        self.root.update_idletasks()
+
+        try:
+            ctrl = TrashBinController()
+            self._arduino = ctrl
+            self._ard_status_lbl.config(
+                text=f"● Verbunden ({ctrl._serial.name})", foreground="#4ade80"
+            )
+            self._connect_btn.config(text="Trennen", state=tk.NORMAL)
+            self._light_btn.config(state=tk.NORMAL)
+        except Exception as exc:
+            self._arduino = None
+            self._ard_status_lbl.config(text="● Nicht verbunden", foreground="#f87171")
+            self._connect_btn.config(state=tk.NORMAL)
+            messagebox.showerror("Verbindungsfehler", f"Arduino nicht erreichbar:\n{exc}")
+
+    def _disconnect_arduino(self):
+        """Disconnect from the Arduino (called with _arduino_lock held)."""
+        try:
+            if self._arduino:
+                if self._led_on:
+                    self._arduino.led_off()
+                self._arduino.close()
+        except Exception:
+            pass
+        self._arduino = None
+        self._led_on = False
+        self._ard_status_lbl.config(text="● Nicht verbunden", foreground="#f87171")
+        self._connect_btn.config(text="Verbinden", state=tk.NORMAL)
+        self._light_btn.config(text="💡  Licht: AUS", state=tk.DISABLED)
+
+    def _toggle_led(self):
+        """Toggle the LED strip on/off."""
+        with self._arduino_lock:
+            if self._arduino is None:
+                return
+            try:
+                if self._led_on:
+                    self._arduino.led_off()
+                    self._led_on = False
+                else:
+                    self._arduino.led_on()
+                    self._led_on = True
+            except Exception as exc:
+                self._arduino = None
+                self._led_on = False
+                self.root.after(0, self._on_arduino_lost)
+                messagebox.showerror("Arduino-Fehler", str(exc))
+                return
+        text = "💡  Licht: AN" if self._led_on else "💡  Licht: AUS"
+        self._light_btn.config(text=text)
+
+    def _on_arduino_lost(self):
+        """Reset UI when Arduino connection is unexpectedly lost."""
+        self._ard_status_lbl.config(text="● Verbindung verloren", foreground="#f87171")
+        self._connect_btn.config(text="Verbinden", state=tk.NORMAL)
+        self._light_btn.config(text="💡  Licht: AUS", state=tk.DISABLED)
 
 
 def main():
