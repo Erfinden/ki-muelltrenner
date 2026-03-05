@@ -32,6 +32,7 @@ import argparse
 from itertools import chain
 
 import multiprocessing
+import timm
 
 from fastai.vision.all import (
     Path,
@@ -42,7 +43,6 @@ from fastai.vision.all import (
     aug_transforms,
     vision_learner,
     resnet34,
-    mobilenet_v3_small,
     error_rate,
     ClassificationInterpretation,
     CategoryBlock,
@@ -87,9 +87,15 @@ parser.add_argument(
     help="Base name for the exported model file (without .pkl). Default: trash_classifier",
 )
 parser.add_argument(
-    "--fast",
-    action="store_true",
-    help="Use MobileNetV3-Small backbone instead of ResNet34 (faster, slightly less accurate).",
+    "--backbone",
+    type=str,
+    default="timm:tf_efficientnetv2_s",
+    help=(
+        "Backbone architecture to use. Supports any fastai built-in (e.g. resnet34, resnet50) "
+        "or any timm model name prefixed with 'timm:' "
+        "(e.g. timm:tf_efficientnetv2_s, timm:tf_efficientnetv2_m, timm:mobilenetv3_small_100). "
+        "Default: resnet34"
+    ),
 )
 parser.add_argument(
     "--num-workers",
@@ -118,7 +124,7 @@ DATA_DIR        = args.data_dir
 EXTRA_DATA_DIRS = [Path(p) for p in (args.extra_data_dirs or [])]
 MODEL_DIR       = args.model_dir
 MODEL_NAME      = args.model_name
-USE_FAST        = args.fast
+BACKBONE        = args.backbone
 NUM_WORKERS     = args.num_workers
 USE_FP16        = args.fp16
 
@@ -153,7 +159,7 @@ device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 print(f"Using device  : {device}")
 print(f"Num workers   : {NUM_WORKERS}")
 print(f"Mixed precision: {USE_FP16}")
-print(f"Backbone      : {'MobileNetV3-Small (fast)' if USE_FAST else 'ResNet34'}")
+print(f"Backbone      : {BACKBONE}")
 
 # ──────────────────────────────────────────────
 # Data  –  merge all directories
@@ -205,7 +211,20 @@ print(f"Validation samples: {len(dls.valid_ds)}")
 # ──────────────────────────────────────────────
 # Model
 # ──────────────────────────────────────────────
-backbone = mobilenet_v3_small if USE_FAST else resnet34
+# Resolve backbone: timm models are passed as strings, fastai built-ins as objects
+_BUILTIN_BACKBONES = {
+    "resnet18":  __import__("fastai.vision.all", fromlist=["resnet18"]).resnet18,
+    "resnet34":  resnet34,
+    "resnet50":  __import__("fastai.vision.all", fromlist=["resnet50"]).resnet50,
+    "resnet101": __import__("fastai.vision.all", fromlist=["resnet101"]).resnet101,
+}
+if BACKBONE in _BUILTIN_BACKBONES:
+    backbone = _BUILTIN_BACKBONES[BACKBONE]
+elif BACKBONE.startswith("timm:"):
+    backbone = BACKBONE[5:]   # fastai accepts the bare timm model name string
+else:
+    backbone = BACKBONE       # try passing it directly (e.g. a bare timm name)
+
 learn = vision_learner(dls, backbone, metrics=error_rate)
 
 if USE_FP16 and device != "cpu":
