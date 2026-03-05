@@ -31,14 +31,18 @@ Run:
 import argparse
 from itertools import chain
 
+import multiprocessing
+
 from fastai.vision.all import (
     Path,
     ImageDataLoaders,
     get_image_files,
     parent_label,
     Resize,
+    aug_transforms,
     vision_learner,
     resnet34,
+    mobilenet_v3_small,
     error_rate,
     ClassificationInterpretation,
     CategoryBlock,
@@ -82,6 +86,29 @@ parser.add_argument(
     default="trash_classifier",
     help="Base name for the exported model file (without .pkl). Default: trash_classifier",
 )
+parser.add_argument(
+    "--fast",
+    action="store_true",
+    help="Use MobileNetV3-Small backbone instead of ResNet34 (faster, slightly less accurate).",
+)
+parser.add_argument(
+    "--num-workers",
+    type=int,
+    default=min(8, multiprocessing.cpu_count()),
+    help="Number of parallel data-loader workers. Default: auto (up to 8).",
+)
+parser.add_argument(
+    "--fp16",
+    action="store_true",
+    default=True,
+    help="Enable mixed-precision (fp16) training for faster GPU training (default: True).",
+)
+parser.add_argument(
+    "--no-fp16",
+    dest="fp16",
+    action="store_false",
+    help="Disable mixed-precision training.",
+)
 args = parser.parse_args()
 
 # ──────────────────────────────────────────────
@@ -91,12 +118,18 @@ DATA_DIR        = args.data_dir
 EXTRA_DATA_DIRS = [Path(p) for p in (args.extra_data_dirs or [])]
 MODEL_DIR       = args.model_dir
 MODEL_NAME      = args.model_name
+USE_FAST        = args.fast
+NUM_WORKERS     = args.num_workers
+USE_FP16        = args.fp16
 
 IMG_SIZE      = 224    # input image size (px)
 BATCH_SIZE    = 32     # images per mini-batch
 EPOCHS_FT     = 4      # fine-tuning epochs (frozen backbone)
 EPOCHS_UNF    = 4      # epochs after unfreezing the whole network
 LEARNING_RATE = 1e-3
+
+# Batch augmentations run on the GPU — fast and effective
+BATCH_TFMS    = aug_transforms(mult=1.0)
 
 # ──────────────────────────────────────────────
 # Sanity checks
@@ -116,8 +149,11 @@ for extra in EXTRA_DATA_DIRS:
 
 MODEL_DIR.mkdir(exist_ok=True)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device: {device}")
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+print(f"Using device  : {device}")
+print(f"Num workers   : {NUM_WORKERS}")
+print(f"Mixed precision: {USE_FP16}")
+print(f"Backbone      : {'MobileNetV3-Small (fast)' if USE_FAST else 'ResNet34'}")
 
 # ──────────────────────────────────────────────
 # Data  –  merge all directories
@@ -140,8 +176,14 @@ if EXTRA_DATA_DIRS:
         splitter=RandomSplitter(valid_pct=0.2, seed=42),
         get_y=parent_label,
         item_tfms=Resize(IMG_SIZE),
+        batch_tfms=BATCH_TFMS,
     )
-    dls = dblock.dataloaders(DATA_DIR, bs=BATCH_SIZE, num_workers=0)
+    dls = dblock.dataloaders(
+        DATA_DIR,
+        bs=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        pin_memory=(device == "cuda"),
+    )
 
 else:
     # Single directory — same logic as before
@@ -150,9 +192,10 @@ else:
         valid_pct=0.2,
         seed=42,
         item_tfms=Resize(IMG_SIZE),
-        batch_tfms=None,
+        batch_tfms=BATCH_TFMS,
         bs=BATCH_SIZE,
-        num_workers=0,
+        num_workers=NUM_WORKERS,
+        pin_memory=(device == "cuda"),
     )
 
 print("Classes:", dls.vocab)
@@ -162,7 +205,12 @@ print(f"Validation samples: {len(dls.valid_ds)}")
 # ──────────────────────────────────────────────
 # Model
 # ──────────────────────────────────────────────
-learn = vision_learner(dls, resnet34, metrics=error_rate)
+backbone = mobilenet_v3_small if USE_FAST else resnet34
+learn = vision_learner(dls, backbone, metrics=error_rate)
+
+if USE_FP16 and device != "cpu":
+    learn = learn.to_fp16()
+    print("Mixed precision (fp16) enabled.")
 
 # ──────────────────────────────────────────────
 # Phase 1 – frozen backbone (transfer learning)
