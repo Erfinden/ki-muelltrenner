@@ -53,7 +53,12 @@ from fastai.vision.all import (
 import torch
 
 # ──────────────────────────────────────────────
+def _get_files(x):
+    """Simple identity function for DataBlock items, avoids pickling issues on Windows."""
+    return x
+
 def main():
+    multiprocessing.freeze_support()
     # ──────────────────────────────────────────────
     # CLI arguments
     # ──────────────────────────────────────────────
@@ -180,14 +185,14 @@ def main():
 
         dblock = DataBlock(
             blocks=(ImageBlock, CategoryBlock),
-            get_items=lambda _: all_files,
+            get_items=_get_files,
             splitter=RandomSplitter(valid_pct=0.2, seed=42),
             get_y=parent_label,
             item_tfms=Resize(IMG_SIZE),
             batch_tfms=BATCH_TFMS,
         )
         dls = dblock.dataloaders(
-            DATA_DIR,
+            all_files,
             bs=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             pin_memory=(device == "cuda"),

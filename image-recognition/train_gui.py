@@ -22,6 +22,7 @@ import sys
 import queue
 import subprocess
 import threading
+import multiprocessing
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
@@ -80,6 +81,11 @@ class TrainGUI:
         self._phase: int = 1          # 1 or 2
         self._training_active: bool = False
 
+        # Settings
+        self._num_workers_var = tk.IntVar(value=min(4, multiprocessing.cpu_count()))
+        self._backbone_var = tk.StringVar(value="timm:tf_efficientnetv2_s")
+        self._fp16_var = tk.BooleanVar(value=True)
+
         self._build_ui()
         self._bring_to_front()
 
@@ -105,6 +111,7 @@ class TrainGUI:
 
         self._build_dataset_panel(left)
         self._build_model_output_panel(left)
+        self._build_config_panel(left)
         self._build_train_button(left)
 
         # ── Right column ──────────────────────────────────────────────────
@@ -346,6 +353,40 @@ class TrainGUI:
         browse_btn.grid(row=0, column=1)
         _bind_hover(browse_btn, BG_DARK, BG_CARD)
 
+    # ── Configuration panel ───────────────────────────────────────────────
+
+    def _build_config_panel(self, parent):
+        card = tk.Frame(parent, bg=BG_PANEL, padx=14, pady=12)
+        card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        card.columnconfigure(1, weight=1)
+
+        tk.Label(
+            card, text="⚙  Konfiguration", bg=BG_PANEL, fg=FG_TEXT,
+            font=("Helvetica", 13, "bold"), anchor="w"
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+
+        # Workers
+        tk.Label(card, text="Arbeiter (Workers):", bg=BG_PANEL, fg=FG_MUTED, font=("Helvetica", 10)).grid(row=1, column=0, sticky="w")
+        workers_spin = tk.Spinbox(
+            card, from_=0, to=32, textvariable=self._num_workers_var,
+            bg=BG_CARD, fg=FG_TEXT, buttonbackground=BG_DARK, relief=tk.FLAT, bd=0, width=5
+        )
+        workers_spin.grid(row=1, column=1, sticky="w", padx=10, pady=2)
+        Tooltip(workers_spin, text="Anzahl der CPU-Prozesse zum Bildladen.\nWindows-Tipp: 0 oder 2 testen, falls es stockt.")
+
+        # Backbone
+        tk.Label(card, text="Modell-Typ:", bg=BG_PANEL, fg=FG_MUTED, font=("Helvetica", 10)).grid(row=2, column=0, sticky="w")
+        backbones = ["timm:tf_efficientnetv2_s", "resnet18", "resnet34", "resnet50", "timm:mobilenetv3_small_100"]
+        bb_menu = ttk.OptionMenu(card, self._backbone_var, backbones[0], *backbones)
+        bb_menu.grid(row=2, column=1, sticky="ew", padx=10, pady=2)
+
+        # FP16
+        tk.Checkbutton(
+            card, text="Mixed Precision (FP16)", variable=self._fp16_var,
+            bg=BG_PANEL, fg=FG_TEXT, selectcolor=BG_DARK, activebackground=BG_PANEL,
+            activeforeground=FG_TEXT, relief=tk.FLAT
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
     # ── Start training button ─────────────────────────────────────────────
 
     def _build_train_button(self, parent):
@@ -359,7 +400,7 @@ class TrainGUI:
             padx=20, pady=14,
             command=self._on_start_training,
         )
-        self.train_btn.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        self.train_btn.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         self.train_btn.bind("<Enter>", lambda e: self.train_btn.config(bg=ACCENT_HOVER))
         self.train_btn.bind("<Leave>", lambda e: self.train_btn.config(bg=ACCENT))
 
@@ -367,7 +408,7 @@ class TrainGUI:
         tk.Label(
             parent, textvariable=self.status_var,
             bg=BG_DARK, fg=FG_MUTED, font=("Helvetica", 10), anchor="w"
-        ).grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        ).grid(row=4, column=0, sticky="ew", pady=(6, 0))
 
     # ── Progress panel ────────────────────────────────────────────────────
 
@@ -547,10 +588,14 @@ class TrainGUI:
         # Assemble command
         cmd = [
             sys.executable, str(TRAIN_SCRIPT),
-            "--data-dir",   primary,
-            "--model-dir",  str(model_dir),
-            "--model-name", model_name,
+            "--data-dir",      primary,
+            "--model-dir",     str(model_dir),
+            "--model-name",    model_name,
+            "--num-workers",   str(self._num_workers_var.get()),
+            "--backbone",      self._backbone_var.get(),
         ]
+        if not self._fp16_var.get():
+            cmd += ["--no-fp16"]
         if extras:
             cmd += ["--extra-data-dirs"] + extras
 
