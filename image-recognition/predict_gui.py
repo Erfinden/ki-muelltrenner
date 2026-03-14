@@ -152,6 +152,7 @@ class PredictGUI:
         # ── Last prediction (for feedback buttons) ────────────────────────────
         self._last_capture_path: Path | None = None
         self._last_top_label:    str  | None = None
+        self._last_results:      list        = []
 
         # ── Arduino state ─────────────────────────────────────────────────────
         self._arduino = None          # TrashBinController instance (or None)
@@ -668,6 +669,11 @@ class PredictGUI:
         try:
             ctrl = TrashBinController(port=port)
             self._arduino = ctrl
+            
+            self._arduino.register_callback("BTN_PRUEFEN", lambda: self.root.after(0, self._on_btn_pruefen_hardware))
+            self._arduino.register_callback("BTN_RICHTIG", lambda: self.root.after(0, self._on_btn_richtig_hardware))
+            self._arduino.register_callback("BTN_FALSCH", lambda: self.root.after(0, self._on_btn_falsch_hardware))
+            
             self._ard_status_dot.config(fg=COLOR_CONNECTED)
             self._ard_status_lbl.config(text=f"Verbunden ({ctrl._serial.name})")
             self._connect_btn.config(text="Trennen", state=tk.NORMAL,
@@ -955,6 +961,7 @@ class PredictGUI:
             # Remember for feedback
             self._last_capture_path = save_path
             self._last_top_label    = top_label
+            self._last_results      = results
             self.richtig_btn.config(state=tk.NORMAL)
             self.falsch_btn.config(state=tk.NORMAL)
 
@@ -1023,6 +1030,39 @@ class PredictGUI:
         except Exception as exc:
             messagebox.showerror("Speicherfehler", str(exc))
             return
+        self._last_capture_path = None
+        self._last_top_label    = None
+        self.richtig_btn.config(state=tk.DISABLED)
+        self.falsch_btn.config(state=tk.DISABLED)
+
+    # ── Hardware button handlers ──────────────────────────────────────────────
+
+    def _on_btn_pruefen_hardware(self):
+        if str(self.pruefen_btn["state"]) == tk.NORMAL:
+            self._on_pruefen()
+
+    def _on_btn_richtig_hardware(self):
+        if str(self.richtig_btn["state"]) == tk.NORMAL:
+            self._on_richtig()
+
+    def _on_btn_falsch_hardware(self):
+        if not self._last_capture_path or not self._last_top_label:
+            return
+        if not hasattr(self, '_last_results') or len(self._last_results) < 2:
+            return
+            
+        # The other class is the second in the sorted results list
+        other_label = self._last_results[1][0]
+        
+        try:
+            dest = self._save_to_collected_data(other_label, self._last_capture_path)
+            self.status_var.set(
+                f"❌→✅ (HW) Gespeichert als: collected-data/{other_label}/{dest.name}"
+            )
+        except Exception as exc:
+            messagebox.showerror("Speicherfehler", str(exc))
+            return
+            
         self._last_capture_path = None
         self._last_top_label    = None
         self.richtig_btn.config(state=tk.DISABLED)

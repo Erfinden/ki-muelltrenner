@@ -63,6 +63,15 @@ const uint8_t LED_DATA_PIN = 2;
 
 CRGB leds[NUM_LEDS];
 
+// ── Button configuration ───────────────────────────────────────────────────
+const uint8_t BTN_PRUEFEN_PIN = 7;
+const uint8_t BTN_RICHTIG_PIN = 8;
+const uint8_t BTN_FALSCH_PIN = 9;
+
+bool btnPruefenState = true;
+bool btnRichtigState = true;
+bool btnFalschState = true;
+
 // ── Servo positions ────────────────────────────────────────────────────────
 //   Index 0 / 2  = "side A"  servos  →  mirrors of side B
 //   Index 1 / 3  = "side B"  servos
@@ -96,6 +105,10 @@ void setup() {
   FastLED.show();
   Serial.println("OK LED ON");
 
+  pinMode(BTN_PRUEFEN_PIN, INPUT_PULLUP);
+  pinMode(BTN_RICHTIG_PIN, INPUT_PULLUP);
+  pinMode(BTN_FALSCH_PIN, INPUT_PULLUP);
+
   closeLid(1);
   closeLid(2);
   delay(500);
@@ -105,6 +118,8 @@ void setup() {
 
 // ══════════════════════════════════════════════════════════════════════════
 void loop() {
+  checkButtons();
+  
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == '\n') {
@@ -181,6 +196,30 @@ void handleCommand(const String& cmd) {
   } else {
     Serial.println("ERR Unknown command. Use OPEN, CLOSE or LED.");
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+void checkButtons() {
+  bool currentPruefen = digitalRead(BTN_PRUEFEN_PIN);
+  if (btnPruefenState && !currentPruefen) {
+    Serial.println("BTN_PRUEFEN");
+    delay(50);
+  }
+  btnPruefenState = currentPruefen;
+
+  bool currentRichtig = digitalRead(BTN_RICHTIG_PIN);
+  if (btnRichtigState && !currentRichtig) {
+    Serial.println("BTN_RICHTIG");
+    delay(50);
+  }
+  btnRichtigState = currentRichtig;
+
+  bool currentFalsch = digitalRead(BTN_FALSCH_PIN);
+  if (btnFalschState && !currentFalsch) {
+    Serial.println("BTN_FALSCH");
+    delay(50);
+  }
+  btnFalschState = currentFalsch;
 }
 
 // ══════════════════════════════════════════════════════════════════════════

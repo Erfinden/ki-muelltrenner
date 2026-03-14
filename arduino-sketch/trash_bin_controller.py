@@ -20,6 +20,8 @@ Usage example
 
 import time
 import serial
+import threading
+import queue
 from serial.tools import list_ports
 
 
@@ -60,6 +62,13 @@ class TrashBinController:
         self._serial = serial.Serial(port, baud, timeout=timeout)
         self._wait_for_ready()
 
+        self._stop_event = threading.Event()
+        self._response_queue = queue.Queue()
+        self._callbacks = {}
+        
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+
     def __enter__(self):
         return self
 
@@ -67,10 +76,16 @@ class TrashBinController:
         self.close()
 
     def close(self):
+        if hasattr(self, '_stop_event'):
+            self._stop_event.set()
         if self._serial.is_open:
             self._serial.close()
 
     # ── Public API ─────────────────────────────────────────────────────────
+
+    def register_callback(self, btn_name: str, callback):
+        """Register a callback for button events from the Arduino."""
+        self._callbacks[btn_name] = callback
 
     def open_lid(self, lid: int | str) -> str:
         """
@@ -102,10 +117,31 @@ class TrashBinController:
 
     # ── Internal ───────────────────────────────────────────────────────────
 
+    def _reader_loop(self):
+        while not self._stop_event.is_set():
+            if self._serial.in_waiting > 0:
+                try:
+                    line = self._serial.readline().decode("ascii", errors="ignore").strip()
+                    if not line:
+                        continue
+                    if line.startswith("BTN_"):
+                        cb = self._callbacks.get(line)
+                        if cb:
+                            cb()
+                    else:
+                        self._response_queue.put(line)
+                except Exception:
+                    pass
+            else:
+                time.sleep(0.01)
+
     def _send(self, command: str) -> str:
         self._serial.write((command + "\n").encode("ascii"))
-        response = self._serial.readline().decode("ascii", errors="ignore").strip()
-        return response
+        try:
+            response = self._response_queue.get(timeout=2.0)
+            return response
+        except queue.Empty:
+            return "TIMEOUT"
 
     def _wait_for_ready(self):
         deadline = time.time() + self.READY_TIMEOUT
